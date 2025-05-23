@@ -1,7 +1,7 @@
 from RP2040ADC import Rp2040AdcDmaAveraging
 import time
 
-PIN_IN = 27
+PIN_IN = 28
 conversion_factor = 3.3 / (65535)
 
 avg_adc = Rp2040AdcDmaAveraging(gpio_pin=PIN_IN, dma_chan=0, adc_samples=16)
