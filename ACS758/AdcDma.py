@@ -1,7 +1,7 @@
 from RP2040ADC import Rp2040AdcDmaAveraging
 import time
 
-PIN_IN = 27
+PIN_IN = 28
 
 avg_adc = Rp2040AdcDmaAveraging(gpio_pin=PIN_IN, dma_chan=0, adc_samples=16)
 print("ADC + DMA test for Raspberry Pi Pico")
