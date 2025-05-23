@@ -5,7 +5,7 @@ from pimoroni import RGBLED
 from picographics import PicoGraphics, DISPLAY_PICO_DISPLAY
 import utime
 from sys import exit
-import gc  # Garbage collector for memory cleanup
+import gc
 
 # Dictionary of scaling factors for ACS758
 # Key: "<current><direction>", where U - uni-directional (1), B - bi-directional (0)
@@ -49,13 +49,8 @@ enable.value(0)  # Set to low initially
 sensor_temp = machine.ADC(2)
 power_ACS758 = 5.0
 R1 = 1600
-R2 = 3140
-Devider = R2 / (R1 + R2)  # Voltage divider ratio
-
-# Taking into account ADC input resistance
-Rin_ADC = 500_000  # ADC input resistance, Ohm
-# Effective divider taking Rin_ADC into account
-Devider_eff = (R2 * Rin_ADC) / (R1 * Rin_ADC + R2 * Rin_ADC + R1 * R2)
+R2 = 3200
+Divider = R2 / (R1 + R2)  # Voltage divider ratio
 
 # Set up the RGB LED
 led = RGBLED(6, 7, 8)
@@ -65,19 +60,17 @@ conversion_factor = 3.3 / (65535)
 # DMA settings for fast scanning
 CAPTURE_DEPTH = 1000  # Capture depth for 50µs signal
 SAMPLE_BUFFER_SIZE = CAPTURE_DEPTH
-SAMPLING_RATE_HZ = 500000  # 500 kHz for capturing 50µs signal with sufficient resolution
+SAMPLING_RATE_HZ = 500000
 
-# State variables
 current_value = 0.0
 max_current = 0.0
 button_y_state = False  # Track the state of button_y (True for STOP, False for START)
 state_error = False  # Track if the state is in error
 sampling_active = False
 
-# Buffer for capturing ADC values
 capture_buffer = []
 
-# Function for setting LED color based on current
+
 def current_to_color(current):
     if current < 0.1:
         return (0, 0, 80)  # Blue for low current
@@ -88,10 +81,8 @@ def current_to_color(current):
     else:
         return (80, 0, 0)  # Red for high current
 
+
 def calculate_current(adc_value, sensor_type, power_ACS758, divider=1.0):
-    """
-    Calculates current based on adc_value, sensor type, power supply voltage and voltage divider.
-    """
     params = ACS758[sensor_type]
     if power_ACS758 == 3.3:
         offset = params["offset3"] * divider
@@ -99,13 +90,16 @@ def calculate_current(adc_value, sensor_type, power_ACS758, divider=1.0):
     else:
         offset = params["offset"] * divider
         scale = params["scale"] * divider
-    current = (adc_value - offset) * 1000 / scale
+
+    current = (adc_value - offset) * (scale / 1000)
+
     if current < 0:
         current = -1 * current
     return current
 
-# Buffer for filtering
+
 filter_buffer = []
+
 
 def filter_adc_value(new_value, window=5):
     global filter_buffer
@@ -114,97 +108,107 @@ def filter_adc_value(new_value, window=5):
         filter_buffer.pop(0)
     return sum(filter_buffer) / len(filter_buffer)
 
+
 def capture_current():
     """Function for capturing current with maximum scanning speed"""
-    global capture_buffer, current_value, max_current
-    
+    global capture_buffer, current_value, max_current, Divider, power_ACS758
+
     capture_buffer.clear()
     gc.collect()  # Clear memory before capture
-    
+
     # Begin capturing data at maximum speed
     start_time = utime.ticks_us()
     for _ in range(SAMPLE_BUFFER_SIZE):
         raw = sensor_temp.read_u16() * conversion_factor
         capture_buffer.append(raw)
     end_time = utime.ticks_us()
-    
-    # Process captured data
+
     if capture_buffer:
-        # Find maximum value
         max_raw = max(capture_buffer)
-        filtered_max = filter_adc_value(max_raw)
-        max_current_sample = calculate_current(filtered_max, "100U", power_ACS758, Devider)
-        
-        # Update maximum value if new value is higher
+        # filtered_max = filter_adc_value(max_raw)
+        max_current_sample = calculate_current(max_raw, "100U", power_ACS758, Divider)
+
         if max_current_sample > max_current:
             max_current = max_current_sample
-        
-        # Current value - the last measured one
-        current_value = calculate_current(filter_adc_value(capture_buffer[-1]), 
-                                         "100U", power_ACS758, Devider)
-    
+
+        sum_of_squares = 0
+        for raw_value in capture_buffer:
+            # current = filter_adc_value(raw_value)
+            sum_of_squares += raw_value**2
+
+        # RMS = sqrt(average of squared values)
+        if len(capture_buffer) > 0:
+            current_value = (sum_of_squares / len(capture_buffer)) ** 0.5
+            current_value = calculate_current(
+                current_value, "100U", power_ACS758, Divider
+            )
+
     # Calculate actual sampling rate
     capture_duration = utime.ticks_diff(end_time, start_time) / 1000000
     actual_rate = SAMPLE_BUFFER_SIZE / capture_duration if capture_duration > 0 else 0
-    
+
     return actual_rate
+
 
 def update_display():
     """Update screen with current and maximum values"""
     global current_value, max_current, button_y_state, state_error
-    
+
     # Clear the screen
     display.set_pen(BLACK)
     display.clear()
-    
+
     # Display current value in large font
     display.set_pen(WHITE)
     display.text(f"Current:", 10, 10, WIDTH, 2)
     display.text(f"{current_value:.1f}", 10, 35, WIDTH, 4)
-    
+
     # Display maximum current value - moved to right side
     display.set_pen(MAGENTA)
-    display.text(f"Max:", WIDTH//2 + 10, 10, WIDTH, 2)
-    display.text(f"{max_current:.1f}", WIDTH//2 + 10, 35, WIDTH, 4)
-    
+    display.text(f"Max:", WIDTH // 2 + 10, 10, WIDTH, 2)
+    display.text(f"{max_current:.1f}", WIDTH // 2 + 10, 35, WIDTH, 4)
+
     # Operation status - moved up
     display.set_pen(GREEN if button_y_state else RED)
     status_text = "RUNNING" if button_y_state else "STOPPED"
     display.text(f"Status: {status_text}", 10, 80, WIDTH, 2)
-    
+
     # Error information, if any
     if state_error:
         display.set_pen(RED)
         display.text("ERROR", WIDTH // 2 - 40, 130, WIDTH, 3)
-    
+
     # Button instructions positioned at bottom with more space
     display.set_pen(CYAN)
-    # Left side - B button 
+    # Left side - B button
     display.text("Reset Max", 10, HEIGHT - 30, WIDTH, 2)
     # Right side - Y button
     display.text("Start/Stop", WIDTH - 125, HEIGHT - 30, WIDTH, 2)
-    
+
     # Update display
     display.update()
-    
+
     # Set LED color based on current
     led.set_rgb(*current_to_color(current_value))
 
+
 def read_buttons():
     """Process button presses"""
-    global button_y_state, state_error, max_current
-    
-    # Button Y - start/stop 
+    global button_y_state, state_error, max_current, current_value
+
+    # Button Y - start/stop
     if button_y.value() == 0:  # Button pressed
         utime.sleep_ms(200)  # Debounce
         button_y_state = not button_y_state  # Toggle state
         enable.value(1 if button_y_state else 0)  # Enable/disable signal
         state_error = False  # Reset error on state change
-    
+
     # Button B - reset maximum value (changed from B to A)
     if button_b.value() == 0:  # Button pressed (changed from button_b to button_a)
         utime.sleep_ms(200)  # Debounce
         max_current = 0.0  # Reset maximum value
+        current_value = 0.0
+
 
 # Main program loop
 print("Program started. Press 'Ctrl+C' to exit.")
@@ -213,18 +217,18 @@ try:
     while True:
         # Read button states
         read_buttons()
-        
+
         # If capture mode is active, capture data
         if button_y_state:
             actual_rate = capture_current()
             # print(f"Actual sampling rate: {actual_rate:.2f} Hz")
-        
+
         # Update display
         update_display()
-        
+
         # Small delay for stable operation
         utime.sleep_ms(50)
-        
+
 except KeyboardInterrupt:
     print("Program terminated.")
     enable.value(0)  # Disable signal on exit
