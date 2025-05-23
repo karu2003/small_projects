@@ -48,6 +48,8 @@ button_y = Pin(15, Pin.IN, Pin.PULL_UP)
 enable = Pin(22, Pin.OUT)
 enable.value(0)  # Set to low initially
 
+PIN_IN = 28
+
 # ADC configuration for current sensor
 sensor_temp = machine.ADC(2)
 power_ACS758 = 5.0
@@ -237,8 +239,8 @@ def read_buttons():
     if button_b.value() == 0:  # Button pressed
         utime.sleep_ms(200)  # Debounce
         max_current = 0.0  # Reset maximum value
-
-adc_dma = Rp2040AdcDmaAveraging(gpio_pin=28, dma_chan=1, adc_samples=SAMPLE_BUFFER_SIZE)
+        
+adc_dma = Rp2040AdcDmaAveraging(gpio_pin=PIN_IN, dma_chan=1, adc_samples=SAMPLE_BUFFER_SIZE)
 
 async def adc_dma_task():
     while True:
