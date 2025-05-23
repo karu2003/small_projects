@@ -76,4 +76,8 @@ class Rp2040AdcDmaAveraging(ADC):
 
         return average
 
+    def is_done(self) -> bool:
+        """Проверить, завершён ли DMA-захват"""
+        return not self._dma_chan.CTRL_TRIG.BUSY
+
 # End
