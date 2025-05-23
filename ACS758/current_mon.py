@@ -97,9 +97,7 @@ def calculate_current(adc_value, sensor_type, power_ACS758, divider=1.0):
         current = -1 * current
     return current
 
-
 filter_buffer = []
-
 
 def filter_adc_value(new_value, window=5):
     global filter_buffer
@@ -108,24 +106,25 @@ def filter_adc_value(new_value, window=5):
         filter_buffer.pop(0)
     return sum(filter_buffer) / len(filter_buffer)
 
-
 def capture_current():
     """Function for capturing current with maximum scanning speed"""
     global capture_buffer, current_value, max_current, Divider, power_ACS758
 
     capture_buffer.clear()
-    gc.collect()  # Clear memory before capture
+    gc.collect()  
 
-    # Begin capturing data at maximum speed
     start_time = utime.ticks_us()
     for _ in range(SAMPLE_BUFFER_SIZE):
         raw = sensor_temp.read_u16() * conversion_factor
         capture_buffer.append(raw)
     end_time = utime.ticks_us()
 
+    # for raw in capture_buffer:
+    #     filtered_value = filter_adc_value(raw)
+    #     filter_buffer.append(filtered_value)
+
     if capture_buffer:
         max_raw = max(capture_buffer)
-        # filtered_max = filter_adc_value(max_raw)
         max_current_sample = calculate_current(max_raw, "100U", power_ACS758, Divider)
 
         if max_current_sample > max_current:
@@ -133,15 +132,12 @@ def capture_current():
 
         sum_of_squares = 0
         for raw_value in capture_buffer:
-            # current = filter_adc_value(raw_value)
             sum_of_squares += raw_value**2
 
         # RMS = sqrt(average of squared values)
         if len(capture_buffer) > 0:
             current_value = (sum_of_squares / len(capture_buffer)) ** 0.5
-            current_value = calculate_current(
-                current_value, "100U", power_ACS758, Divider
-            )
+            current_value = calculate_current(current_value, "100U", power_ACS758, Divider)
 
     # Calculate actual sampling rate
     capture_duration = utime.ticks_diff(end_time, start_time) / 1000000
@@ -154,7 +150,6 @@ def update_display():
     """Update screen with current and maximum values"""
     global current_value, max_current, button_y_state, state_error
 
-    # Clear the screen
     display.set_pen(BLACK)
     display.clear()
 
@@ -193,7 +188,6 @@ def update_display():
 
 
 def read_buttons():
-    """Process button presses"""
     global button_y_state, state_error, max_current, current_value
 
     # Button Y - start/stop
@@ -218,16 +212,11 @@ try:
         # Read button states
         read_buttons()
 
-        # If capture mode is active, capture data
         if button_y_state:
             actual_rate = capture_current()
             # print(f"Actual sampling rate: {actual_rate:.2f} Hz")
-
-        # Update display
         update_display()
-
-        # Small delay for stable operation
-        utime.sleep_ms(50)
+        utime.sleep_ms(1)
 
 except KeyboardInterrupt:
     print("Program terminated.")
