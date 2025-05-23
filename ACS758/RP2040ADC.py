@@ -75,6 +75,17 @@ class Rp2040AdcDmaAveraging(ADC):
         #\ print("avg {}, sniffavg {}".format(average, sniffavg))
 
         return average
+    
+    def wait_and_read_average_u16(self) -> int:
+        while self._dma_chan.CTRL_TRIG.BUSY:
+            pass
+        self._adc.CS.START_MANY = 0
+        self._dma_chan.CTRL_TRIG.EN = 0
+
+        average_u12 = sum(self._adc_buff) // self._adc_samples
+        average_u16 = average_u12 << 4 
+
+        return average_u16
 
     def is_done(self) -> bool:
         """Проверить, завершён ли DMA-захват"""

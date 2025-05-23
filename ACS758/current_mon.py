@@ -60,7 +60,7 @@ Divider = R2 / (R1 + R2)  # Voltage divider ratio
 # Set up the RGB LED
 led = RGBLED(6, 7, 8)
 
-conversion_factor = 3.3 / (65535)
+conversion_factor = 3.3 / 4095
 
 # DMA settings optimized for 100µs signal capture
 ADC_SAMPLE_TIME_US = 2  # Примерно 2 мкс на отсчёт при DIV_REG=0 (500 кГц)
@@ -86,8 +86,6 @@ signal_detected = False
 signal_start_time = 0
 signal_duration = 0
 
-# Buffer for capturing ADC values using DMA
-capture_buffer = array.array('H', [0] * SAMPLE_BUFFER_SIZE)  # 16-bit unsigned integers
 dma_active = False
 
 # Function for setting LED color based on current
@@ -117,7 +115,7 @@ def calculate_current(adc_value, sensor_type, power_ACS758, divider=1.0):
 
 def capture_current_dma():
     """Function for capturing 100µs current pulses using DMA with maximum speed"""
-    global current_value, max_current, actual_sampling_rate, dma_active, signal_detected
+    global current_value, max_current, dma_active, signal_detected, signal_duration
 
     if not dma_active:
         try:
@@ -128,27 +126,34 @@ def capture_current_dma():
             dma_active = False
         return 0
 
-    # Проверяем завершение DMA захвата через is_done()
     try:
         if adc_dma.is_done():
             adc_value = adc_dma.wait_and_read_average_u12()
             dma_active = False
 
-            end_time = utime.ticks_us()
-            voltage = adc_value * conversion_factor * 10
-            current_value = voltage #calculate_current(voltage, "100U", power_ACS758, Divider)
+            voltage = adc_value * conversion_factor
+            current_value = calculate_current(voltage, "100U", power_ACS758, Divider)
             if current_value > max_current:
                 max_current = current_value
-            capture_duration = utime.ticks_diff(end_time, 0) / 1000000
-            actual_sampling_rate = SAMPLE_BUFFER_SIZE / capture_duration if capture_duration > 0 else 0
-            return actual_sampling_rate
+
+            # Просто сохраняем длительность захвата (для других целей)
+            signal_duration = SAMPLE_BUFFER_SIZE * ADC_SAMPLE_TIME_US
+
+            # Флаг обнаружения сигнала
+            signal_detected = True if current_value > TRIGGER_THRESHOLD else False
+
+            return 0  # actual_sampling_rate больше не вычисляется здесь
         else:
-            # DMA ещё не завершён, просто выходим
             return 0
     except Exception as e:
         print(f"DMA read error: {e}")
         dma_active = False
         return 0
+
+# Для анимации колесика
+spinner_phase = 0
+spinner_chars = ['|', '/', '-', '\\']
+spinner_colors = [CYAN, YELLOW, MAGENTA, GREEN]
 
 def update_display():
     """Update screen with layout for 240x135 display"""
@@ -168,45 +173,50 @@ def update_display():
     
     # Right side - signal status
     display.set_pen(GREEN if signal_detected else BLUE)
-    signal_status = "SIGNAL" if signal_detected else "READY"
-    display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
+    signal_status = "SIGNAL" if signal_detected else ""  # убираем READY
+    if signal_status:
+        display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
     
-    # --- Main information: current value ---
+    # --- Заголовки с подписями current и max ---
+    display.set_pen(CYAN)
+    display.text("CURRENT", 10, 30, WIDTH, 2)
+    display.text("MAX", 130, 30, WIDTH, 2)
+    
+    # --- Значения тока и максимального тока ---
     display.set_pen(WHITE)
-    display.text(f"{current_value:.2f}A", 10, 30, WIDTH, 4)
+    current_str = f"{current_value:.1f}"
+    display.text(current_str, 10, 55, WIDTH, 3)
     
-    # --- Peak value ---
     display.set_pen(MAGENTA)
-    display.text(f"PEAK: {max_current:.2f}A", 10, 70, WIDTH, 2)
+    peak_str = f"{max_current:.1f}"
+    display.text(peak_str, 130, 55, WIDTH, 3)
     
-    # --- Technical information in two rows ---
+    # --- Техническая информация ---
     display.set_pen(YELLOW)
-    # Rate and pulse duration
-    rate_info = f"{actual_sampling_rate/1000:.1f}kHz"
-    display.text(rate_info, 10, 95, WIDTH, 1)
-    
-    if signal_detected:
-        pulse_info = f"{signal_duration:.1f}us"
-        display.text(pulse_info, 120, 95, WIDTH, 1)
-    
-    # DMA mode and threshold
-    display.set_pen(CYAN if dma_active else YELLOW)
-    dma_status = "DMA" if dma_active else "STD"
-    display.text(dma_status, 10, 110, WIDTH, 1)
-    
-    display.set_pen(WHITE)
-    display.text(f"{TRIGGER_THRESHOLD:.1f}V", 50, 110, WIDTH, 1)
+    tech_y = 90
+    # Показываем фиксированную частоту 500 kHz
+    rate_info = "500.0 kHz"
+    display.text(rate_info, 10, tech_y, WIDTH, 2)
     
     # Error information, if any
     if state_error:
         display.set_pen(RED)
-        display.text("ERROR", WIDTH // 2 - 40, 95, WIDTH, 2)
+        display.text("ERROR", WIDTH // 2 - 40, tech_y, WIDTH, 2)
     
     # --- Button instructions ---
     display.set_pen(CYAN)
     display.text("Reset", 5, HEIGHT - 15, WIDTH, 1)
     display.text("Start/Stop", WIDTH - 80, HEIGHT - 15, WIDTH, 1)
-    
+
+    # --- Анимированный индикатор работы программы ---
+    global spinner_phase
+    spinner_y = HEIGHT - 32  # чуть выше надписи кнопки
+    spinner_x = WIDTH - 18
+    spinner_char = spinner_chars[spinner_phase % len(spinner_chars)]
+    spinner_color = spinner_colors[spinner_phase % len(spinner_colors)]
+    display.set_pen(spinner_color)
+    display.text(spinner_char, spinner_x, spinner_y, WIDTH, 2)
+
     # Update display
     display.update()
     
@@ -215,7 +225,7 @@ def update_display():
 
 def read_buttons():
     """Process button presses"""
-    global button_y_state, state_error, max_current, dma_active
+    global button_y_state, state_error, max_current, dma_active, current_value
 
     # Button Y - start/stop 
     if button_y.value() == 0:  # Button pressed
@@ -239,6 +249,7 @@ def read_buttons():
     if button_b.value() == 0:  # Button pressed
         utime.sleep_ms(200)  # Debounce
         max_current = 0.0  # Reset maximum value
+        current_value = 0.0
         
 adc_dma = Rp2040AdcDmaAveraging(gpio_pin=PIN_IN, dma_chan=1, adc_samples=SAMPLE_BUFFER_SIZE)
 
@@ -249,11 +260,13 @@ async def adc_dma_task():
         await asyncio.sleep_ms(TIMER_PERIOD_MS)
 
 async def main():
+    global spinner_phase
     loop = asyncio.get_event_loop()
     loop.create_task(adc_dma_task())
     while True:
         read_buttons()
         update_display()
+        spinner_phase = (spinner_phase + 1) % 1000  # увеличиваем фазу для анимации
         await asyncio.sleep(0.1)  # корректно внутри async def
 
 try:
