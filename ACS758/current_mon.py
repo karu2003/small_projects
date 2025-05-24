@@ -79,9 +79,9 @@ conversion_factor = 3.3 / 4095
 
 # DMA settings optimized for 100µs signal capture
 ADC_SAMPLE_TIME_US = 2  # About 2 μs per sample with DIV_REG=0 (500 kHz)
-CAPTURE_DEPTH = 64      # For example, 64 samples (128 μs capture)
+CAPTURE_DEPTH = 16      # For example, 64 samples (128 μs capture)
 SAMPLE_BUFFER_SIZE = CAPTURE_DEPTH
-TRIGGER_THRESHOLD = 0.1  # Voltage threshold to detect signal start
+TRIGGER_THRESHOLD = 0.4  # Voltage threshold to detect signal start
 
 
 def calc_timer_period_ms(capture_depth, sample_time_us):
