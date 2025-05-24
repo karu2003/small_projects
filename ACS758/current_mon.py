@@ -86,7 +86,7 @@ TRIGGER_THRESHOLD = 0.1  # Voltage threshold to detect signal start
 
 def calc_timer_period_ms(capture_depth, sample_time_us):
     # Minimum timer period in milliseconds (with 10% margin)
-    min_period_us = capture_depth * sample_time_us * 1.1
+    min_period_us = capture_depth * sample_time_us # * 1.1
     return max(1, int(min_period_us // 1000 + (min_period_us % 1000 > 0)))
 
 
@@ -306,13 +306,21 @@ adc_dma = Rp2040AdcDmaAveraging(
 
 
 def dma_core1_loop():
+    """Simplified DMA loop with more straightforward logic"""
     while dma_thread_running:
-        capture_current_dma()
-        utime.sleep_ms(TIMER_PERIOD_MS)
+        # Вызываем capture_current_dma() только если DMA не активен или готов
+        if not dma_active or adc_dma.is_done():
+            capture_current_dma()
+            # После обработки делаем паузу перед следующим циклом
+            utime.sleep_ms(TIMER_PERIOD_MS)
+        else:
+            # DMA в процессе - небольшая пауза перед проверкой снова
+            utime.sleep_ms(1)
 
 
 USE_TWO_CORES = True
 DISPLAY_UPDATE_MIN_MS = 40 if USE_TWO_CORES else 20
+DISPLAY_UPDATE_MIN_MS = 50
 
 def main():
     global spinner_phase
