@@ -311,7 +311,7 @@ def dma_core1_loop():
         utime.sleep_ms(TIMER_PERIOD_MS)
 
 
-USE_TWO_CORES = False
+USE_TWO_CORES = True
 DISPLAY_UPDATE_MIN_MS = 40 if USE_TWO_CORES else 20
 
 def main():
