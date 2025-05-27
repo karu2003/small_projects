@@ -41,7 +41,7 @@ except Exception as e:
     print("SPI speed setup skipped:", e)
 
 display = PicoGraphics(display=DISPLAY_PICO_DISPLAY, bus=spi, rotate=0)
-display.set_backlight(0.5)
+display.set_backlight(1.0)
 
 WHITE = display.create_pen(255, 255, 255)
 BLACK = display.create_pen(0, 0, 0)
@@ -200,10 +200,20 @@ cached_data = {
 data_changed = False
 
 
-def update_display():
-    """Update screen with layout for 240x135 display"""
-    global spinner_phase, cached_data, data_changed
+# Кэш для отслеживания того, что уже нарисовано на экране
+display_cache = {
+    "current_value": None,
+    "max_current": None,
+    "signal_detected": None,
+    "spinner_phase": None,
+    "error_state": None
+}
 
+def partial_update_display():
+    """Оптимизированная версия update_display с частичным обновлением экрана"""
+    global spinner_phase, cached_data, data_changed, display_cache
+    
+    # Получение текущих значений из кэша данных
     with data_lock:
         if (shared_data["current_value"] != cached_data["current_value"] or
             shared_data["max_current"] != cached_data["max_current"] or
@@ -216,75 +226,124 @@ def update_display():
 
     with spinner_lock:
         current_spinner_phase = spinner_phase
-
-    if data_changed or current_spinner_phase % 2 == 0:
-        # Use local variables from cache
-        current_value = cached_data["current_value"]
-        max_current = cached_data["max_current"]
-        signal_detected = cached_data["signal_detected"]
-        
+    
+    # Локальные переменные для удобства
+    current_value = cached_data["current_value"]
+    max_current = cached_data["max_current"]
+    signal_detected = cached_data["signal_detected"]
+    
+    # Первичная инициализация экрана, если нужно
+    if display_cache["current_value"] is None:
         # Clear the screen
         display.set_pen(BLACK)
         display.clear()
 
-        # --- Top row: status ---
-        status_y = 5
-        # Left side - operation status
-        display.set_pen(GREEN)
-        status_text = "ACTIVE"  # DMA is always active
-        display.text(status_text, 5, status_y, WIDTH, 2)
-
-        # Right side - signal status
-        display.set_pen(GREEN if signal_detected else BLUE)
-        signal_status = "SIGNAL" if signal_detected else ""  # removing READY
-        if signal_status:
-            display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
-
-        # --- Заголовки с подписями current и max ---
+        # --- Заголовки с подписями current и max (они не меняются) ---
         display.set_pen(CYAN)
         display.text("CURRENT", 10, 30, WIDTH, 2)
         display.text("MAX", 130, 30, WIDTH, 2)
-
-        # --- Значения тока и максимального тока ---
-        display.set_pen(WHITE)
-        current_str = f"{current_value:.1f}"
-        display.text(current_str, 10, 55, WIDTH, 3)
-
-        display.set_pen(MAGENTA)
-        peak_str = f"{max_current:.1f}"
-        display.text(peak_str, 130, 55, WIDTH, 3)
-
-        # --- Техническая информация ---
+        
+        # --- Статичные элементы интерфейса ---
         display.set_pen(YELLOW)
         tech_y = 90
-        # Show fixed frequency 500 kHz
         rate_info = "500.0 kHz"
         display.text(rate_info, 10, tech_y, WIDTH, 2)
-
-        # Error information, if any
-        if state_error:
-            display.set_pen(RED)
-            display.text("ERROR", WIDTH // 2 - 40, tech_y, WIDTH, 2)
-
-        # --- Button instructions ---
+        
+        # --- Добавляем надпись Activ ---
+        display.set_pen(GREEN)
+        display.text("ACTIV", 10, 5, WIDTH, 2)
+        
+        # --- Инструкция по кнопкам (не меняется) ---
         display.set_pen(CYAN)
-        display.text("Reset", 5, HEIGHT - 15, WIDTH, 1)  # Reset button only
-
-        # --- Animated indicator for program operation ---
-        spinner_y = HEIGHT - 32  # slightly above the button label
+        display.text("Reset", 5, HEIGHT - 15, WIDTH, 1)
+        
+        # Обновляем все значения как новые
+        data_changed = True
+        display_cache["spinner_phase"] = None
+        
+        # Обновляем дисплей после начальной отрисовки
+        display.update()
+    
+    # Обрабатываем изменившиеся значения
+    if data_changed:
+        # --- Верхняя строка: статус ---
+        if display_cache["signal_detected"] != signal_detected:
+            status_y = 5
+            
+            # Обновляем статус сигнала только если изменился
+            display.set_pen(GREEN if signal_detected else BLUE)
+            
+            # Очищаем область перед отрисовкой
+            display.set_pen(BLACK)
+            rect_width = 75
+            rect_height = 20
+            display.rectangle(WIDTH - rect_width, status_y, rect_width, rect_height)
+            
+            # Рисуем новое состояние
+            display.set_pen(GREEN if signal_detected else BLUE)
+            signal_status = "SIGNAL" if signal_detected else ""
+            if signal_status:
+                display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
+                
+            display_cache["signal_detected"] = signal_detected
+            
+        # --- Обновляем значение тока ---
+        if display_cache["current_value"] != current_value:
+            display.set_pen(BLACK)
+            display.rectangle(10, 55, 110, 25)  # Стираем старое значение
+            
+            display.set_pen(WHITE)
+            current_str = f"{current_value:.1f}"
+            display.text(current_str, 10, 55, WIDTH, 3)
+            display_cache["current_value"] = current_value
+        
+        # --- Обновляем максимальное значение тока ---
+        if display_cache["max_current"] != max_current:
+            display.set_pen(BLACK)
+            display.rectangle(130, 55, 110, 25)  # Стираем старое значение
+            
+            display.set_pen(MAGENTA)
+            peak_str = f"{max_current:.1f}"
+            display.text(peak_str, 130, 55, WIDTH, 3)
+            display_cache["max_current"] = max_current
+            
+        # --- Обновляем состояние ошибки ---
+        if display_cache["error_state"] != state_error:
+            tech_y = 90
+            
+            # Очищаем область состояния ошибки
+            display.set_pen(BLACK)
+            display.rectangle(WIDTH // 2 - 50, tech_y, 100, 20)
+            
+            if state_error:
+                display.set_pen(RED)
+                display.text("ERROR", WIDTH // 2 - 40, tech_y, WIDTH, 2)
+            
+            display_cache["error_state"] = state_error
+    
+    # --- Всегда обновляем анимированный индикатор ---
+    if display_cache["spinner_phase"] != current_spinner_phase:
+        spinner_y = HEIGHT - 32
         spinner_x = WIDTH - 18
+        
+        # Очищаем предыдущий символ
+        display.set_pen(BLACK)
+        display.rectangle(spinner_x, spinner_y, 20, 20)
+        
+        # Рисуем новый символ
         spinner_char = spinner_chars[current_spinner_phase % len(spinner_chars)]
         spinner_color = spinner_colors[current_spinner_phase % len(spinner_colors)]
         display.set_pen(spinner_color)
         display.text(spinner_char, spinner_x, spinner_y, WIDTH, 2)
         
-        # Update display
+        display_cache["spinner_phase"] = current_spinner_phase
+    
+    # Обновляем светодиод по текущему значению
+    led.set_rgb(*current_to_color(current_value))
+    
+    # Обновляем экран только если что-то изменилось
+    if data_changed or display_cache["spinner_phase"] != current_spinner_phase:
         display.update()
-        
-        # Set LED color based on current
-        led.set_rgb(*current_to_color(current_value))
-        
-        # Reset data change flag after update
         data_changed = False
 
 
@@ -336,7 +395,7 @@ def main():
                 capture_current_dma()
             now = utime.ticks_ms()
             if utime.ticks_diff(now, last_display_update) >= DISPLAY_UPDATE_MIN_MS:
-                update_display()
+                partial_update_display()
                 with spinner_lock:
                     spinner_phase = (spinner_phase + 1) % len(spinner_chars)
                 last_display_update = now
