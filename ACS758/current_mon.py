@@ -213,8 +213,13 @@ def partial_update_display():
     """Оптимизированная версия update_display с частичным обновлением экрана"""
     global spinner_phase, cached_data, data_changed, display_cache
     
-    # Получение текущих значений из кэша данных
-    with data_lock:
+    # Проверяем, можно ли получить блокировку данных без блокирования
+    if not data_lock.acquire(False):
+        # Если блокировка занята, не обновляем экран
+        return
+    
+    try:
+        # Получение текущих значений из кэша данных
         if (shared_data["current_value"] != cached_data["current_value"] or
             shared_data["max_current"] != cached_data["max_current"] or
             shared_data["signal_detected"] != cached_data["signal_detected"]):
@@ -223,6 +228,9 @@ def partial_update_display():
             cached_data["max_current"] = shared_data["max_current"] 
             cached_data["signal_detected"] = shared_data["signal_detected"]
             data_changed = True
+    finally:
+        # Освобождаем блокировку
+        data_lock.release()
 
     with spinner_lock:
         current_spinner_phase = spinner_phase
@@ -379,7 +387,6 @@ def dma_core1_loop():
 
 USE_TWO_CORES = True
 DISPLAY_UPDATE_MIN_MS = 40 if USE_TWO_CORES else 20
-DISPLAY_UPDATE_MIN_MS = 50
 
 def main():
     global spinner_phase
