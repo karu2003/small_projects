@@ -210,149 +210,133 @@ display_cache = {
 }
 
 def partial_update_display():
-    """Оптимизированная версия update_display с частичным обновлением экрана"""
     global spinner_phase, cached_data, data_changed, display_cache
-    
+
     # Проверяем, можно ли получить блокировку данных без блокирования
     if not data_lock.acquire(False):
         # Если блокировка занята, не обновляем экран
         return
-    
+
     try:
         # Получение текущих значений из кэша данных
         if (shared_data["current_value"] != cached_data["current_value"] or
             shared_data["max_current"] != cached_data["max_current"] or
             shared_data["signal_detected"] != cached_data["signal_detected"]):
-            
             cached_data["current_value"] = shared_data["current_value"]
-            cached_data["max_current"] = shared_data["max_current"] 
+            cached_data["max_current"] = shared_data["max_current"]
             cached_data["signal_detected"] = shared_data["signal_detected"]
             data_changed = True
     finally:
-        # Освобождаем блокировку
         data_lock.release()
 
     with spinner_lock:
         current_spinner_phase = spinner_phase
-    
-    # Локальные переменные для удобства
+
     current_value = cached_data["current_value"]
     max_current = cached_data["max_current"]
     signal_detected = cached_data["signal_detected"]
-    
+
     # Первичная инициализация экрана, если нужно
     if display_cache["current_value"] is None:
-        # Clear the screen
         display.set_pen(BLACK)
         display.clear()
 
-        # --- Заголовки с подписями current и max (они не меняются) ---
         display.set_pen(CYAN)
         display.text("CURRENT", 10, 30, WIDTH, 2)
         display.text("MAX", 130, 30, WIDTH, 2)
-        
-        # --- Статичные элементы интерфейса ---
+
         display.set_pen(YELLOW)
         tech_y = 90
         rate_info = "500.0 kHz"
         display.text(rate_info, 10, tech_y, WIDTH, 2)
-        
-        # --- Добавляем надпись Activ ---
+
         display.set_pen(GREEN)
         display.text("ACTIV", 10, 5, WIDTH, 2)
-        
-        # --- Инструкция по кнопкам (не меняется) ---
+
         display.set_pen(CYAN)
         display.text("Reset", 5, HEIGHT - 15, WIDTH, 1)
-        
-        # Обновляем все значения как новые
-        data_changed = True
+
+        # Обновляем кэш актуальными значениями, чтобы не было повторной инициализации и затирания
+        display_cache["current_value"] = current_value
+        display_cache["max_current"] = max_current
+        display_cache["signal_detected"] = signal_detected
         display_cache["spinner_phase"] = None
-        
-        # Обновляем дисплей после начальной отрисовки
-        display.update()
-    
-    # Обрабатываем изменившиеся значения
+        display_cache["error_state"] = None
+
+        display.update()  # Только один раз!
+        return  # Важно: не продолжаем, чтобы не было двойного обновления!
+
+    # --- Динамические обновления ---
+    redraw = False
+
     if data_changed:
         # --- Верхняя строка: статус ---
         if display_cache["signal_detected"] != signal_detected:
             status_y = 5
-            
-            # Обновляем статус сигнала только если изменился
             display.set_pen(GREEN if signal_detected else BLUE)
-            
-            # Очищаем область перед отрисовкой
             display.set_pen(BLACK)
             rect_width = 75
             rect_height = 20
             display.rectangle(WIDTH - rect_width, status_y, rect_width, rect_height)
-            
-            # Рисуем новое состояние
             display.set_pen(GREEN if signal_detected else BLUE)
             signal_status = "SIGNAL" if signal_detected else ""
             if signal_status:
                 display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
-                
             display_cache["signal_detected"] = signal_detected
-            
+            redraw = True  # <--- добавлено
+
         # --- Обновляем значение тока ---
         if display_cache["current_value"] != current_value:
             display.set_pen(BLACK)
-            display.rectangle(10, 55, 110, 25)  # Стираем старое значение
-            
+            # Очищаем только область значения, не задевая "CURRENT"
+            display.rectangle(10, 55, 100, 25)  # ширина 100, чтобы не затрагивать надпись
             display.set_pen(WHITE)
             current_str = f"{current_value:.1f}"
-            display.text(current_str, 10, 55, WIDTH, 3)
+            display.text(current_str, 10, 55, 100, 3)  # ширина 100
             display_cache["current_value"] = current_value
-        
+            redraw = True
+
         # --- Обновляем максимальное значение тока ---
         if display_cache["max_current"] != max_current:
             display.set_pen(BLACK)
-            display.rectangle(130, 55, 110, 25)  # Стираем старое значение
-            
+            # Очищаем только область значения, не задевая "MAX"
+            display.rectangle(130, 55, 100, 25)  # ширина 100
             display.set_pen(MAGENTA)
             peak_str = f"{max_current:.1f}"
-            display.text(peak_str, 130, 55, WIDTH, 3)
+            display.text(peak_str, 130, 55, 100, 3)  # ширина 100
             display_cache["max_current"] = max_current
-            
+            redraw = True
+
         # --- Обновляем состояние ошибки ---
         if display_cache["error_state"] != state_error:
             tech_y = 90
-            
-            # Очищаем область состояния ошибки
             display.set_pen(BLACK)
             display.rectangle(WIDTH // 2 - 50, tech_y, 100, 20)
-            
             if state_error:
                 display.set_pen(RED)
                 display.text("ERROR", WIDTH // 2 - 40, tech_y, WIDTH, 2)
-            
             display_cache["error_state"] = state_error
-    
+            redraw = True  # <--- добавлено
+
+        data_changed = False  # сбрасываем флаг после обработки
+
     # --- Всегда обновляем анимированный индикатор ---
     if display_cache["spinner_phase"] != current_spinner_phase:
         spinner_y = HEIGHT - 32
         spinner_x = WIDTH - 18
-        
-        # Очищаем предыдущий символ
         display.set_pen(BLACK)
         display.rectangle(spinner_x, spinner_y, 20, 20)
-        
-        # Рисуем новый символ
         spinner_char = spinner_chars[current_spinner_phase % len(spinner_chars)]
         spinner_color = spinner_colors[current_spinner_phase % len(spinner_colors)]
         display.set_pen(spinner_color)
         display.text(spinner_char, spinner_x, spinner_y, WIDTH, 2)
-        
         display_cache["spinner_phase"] = current_spinner_phase
-    
-    # Обновляем светодиод по текущему значению
+        redraw = True  # <--- добавлено
+
     led.set_rgb(*current_to_color(current_value))
-    
-    # Обновляем экран только если что-то изменилось
-    if data_changed or display_cache["spinner_phase"] != current_spinner_phase:
+
+    if redraw:
         display.update()
-        data_changed = False
 
 
 def read_buttons():
@@ -387,6 +371,7 @@ def dma_core1_loop():
 
 USE_TWO_CORES = True
 DISPLAY_UPDATE_MIN_MS = 40 if USE_TWO_CORES else 20
+# DISPLAY_UPDATE_MIN_MS = 50
 
 def main():
     global spinner_phase
