@@ -41,7 +41,7 @@ except Exception as e:
     print("SPI speed setup skipped:", e)
 
 display = PicoGraphics(display=DISPLAY_PICO_DISPLAY, bus=spi, rotate=0)
-display.set_backlight(0.5)
+display.set_backlight(0.9)
 
 WHITE = display.create_pen(255, 255, 255)
 BLACK = display.create_pen(0, 0, 0)
@@ -80,7 +80,7 @@ conversion_factor = 3.3 / 4095
 ADC_SAMPLE_TIME_US = 2  # About 2 μs per sample with DIV_REG=0 (500 kHz)
 CAPTURE_DEPTH = 64      # For example, 64 samples (128 μs capture)
 SAMPLE_BUFFER_SIZE = CAPTURE_DEPTH
-TRIGGER_THRESHOLD = 0.1  # Voltage threshold to detect signal start
+TRIGGER_THRESHOLD = 0.4  # Voltage threshold to detect signal start
 
 
 def calc_timer_period_ms(capture_depth, sample_time_us):
@@ -312,7 +312,7 @@ def dma_core1_loop():
         utime.sleep_ms(TIMER_PERIOD_MS)
 
 
-USE_TWO_CORES = False
+USE_TWO_CORES = True
 DISPLAY_UPDATE_MIN_MS = 40 if USE_TWO_CORES else 20
 
 def main():
