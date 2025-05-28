@@ -14,14 +14,14 @@ import _thread
 # Dictionary of scaling factors for ACS758
 # Key: "<current><direction>", where U - uni-directional (1), B - bi-directional (0)
 ACS758 = {
-    "50B": {"scale": 40, "offset": 2.5, "scale3": 20, "offset3": 1.65, "dir": 0},
-    "50U": {"scale": 60, "offset": 0.6, "scale3": 30, "offset3": 0.36, "dir": 1},
-    "100B": {"scale": 20, "offset": 2.5, "scale3": 10, "offset3": 1.65, "dir": 0},
-    "100U": {"scale": 40, "offset": 0.6, "scale3": 20, "offset3": 0.36, "dir": 1},
-    "150B": {"scale": 13.3, "offset": 2.6, "scale3": 6.65, "offset3": 1.65, "dir": 0},
-    "150U": {"scale": 26.7, "offset": 0.6, "scale3": 13.35, "offset3": 0.36, "dir": 1},
-    "200B": {"scale": 10, "offset": 2.5, "scale3": 5, "offset3": 1.65, "dir": 0},
-    "200U": {"scale": 20, "offset": 0.6, "scale3": 10, "offset3": 0.36, "dir": 1},
+    "50B": {"scale": 0.040, "offset": 2.5, "scale3": 0.020, "offset3": 1.65, "dir": 0},
+    "50U": {"scale": 0.060, "offset": 0.6, "scale3": 0.030, "offset3": 0.36, "dir": 1},
+    "100B": {"scale": 0.020, "offset": 2.5, "scale3": 0.010, "offset3": 1.65, "dir": 0},
+    "100U": {"scale": 0.040, "offset": 0.6, "scale3": 0.020, "offset3": 0.36, "dir": 1},
+    "150B": {"scale": 0.0133, "offset": 2.6, "scale3": 0.00665, "offset3": 1.65, "dir": 0},
+    "150U": {"scale": 0.0267, "offset": 0.6, "scale3": 0.01335, "offset3": 0.36, "dir": 1},
+    "200B": {"scale": 0.010, "offset": 2.5, "scale3": 0.005, "offset3": 1.65, "dir": 0},
+    "200U": {"scale": 0.020, "offset": 0.6, "scale3": 0.010, "offset3": 0.36, "dir": 1},
 }
 
 try:
@@ -41,7 +41,7 @@ except Exception as e:
     print("SPI speed setup skipped:", e)
 
 display = PicoGraphics(display=DISPLAY_PICO_DISPLAY, bus=spi, rotate=0)
-display.set_backlight(1.0)
+display.set_backlight(0.5)
 
 WHITE = display.create_pen(255, 255, 255)
 BLACK = display.create_pen(0, 0, 0)
@@ -68,7 +68,7 @@ PIN_IN = 28
 
 power_ACS758 = 5.0
 R1 = 1600
-R2 = 3200
+R2 = 3190
 Divider = R2 / (R1 + R2)
 
 
@@ -76,17 +76,16 @@ led = RGBLED(6, 7, 8)
 
 conversion_factor = 3.3 / 4095
 
-
 # DMA settings optimized for 100µs signal capture
 ADC_SAMPLE_TIME_US = 2  # About 2 μs per sample with DIV_REG=0 (500 kHz)
-CAPTURE_DEPTH = 16      # For example, 64 samples (128 μs capture)
+CAPTURE_DEPTH = 64      # For example, 64 samples (128 μs capture)
 SAMPLE_BUFFER_SIZE = CAPTURE_DEPTH
-TRIGGER_THRESHOLD = 0.4  # Voltage threshold to detect signal start
+TRIGGER_THRESHOLD = 0.1  # Voltage threshold to detect signal start
 
 
 def calc_timer_period_ms(capture_depth, sample_time_us):
     # Minimum timer period in milliseconds (with 10% margin)
-    min_period_us = capture_depth * sample_time_us # * 1.1
+    min_period_us = capture_depth * sample_time_us * 1.1
     return max(1, int(min_period_us // 1000 + (min_period_us % 1000 > 0)))
 
 
@@ -122,12 +121,14 @@ def calculate_current(adc_value, sensor_type, power_ACS758, divider=1.0):
 
     params = ACS758[sensor_type]
     if power_ACS758 == 3.3:
-        offset = params["offset3"] * divider
-        scale = params["scale3"] * divider
+        offset = params["offset3"]
+        scale = params["scale3"]
     else:
-        offset = params["offset"] * divider
-        scale = params["scale"] * divider
-    current = (adc_value - offset) * (scale / 1000)
+        offset = params["offset"]
+        scale = params["scale"]
+    adc_value = adc_value/divider
+    # print(f"ADC Value: {adc_value}, Offset: {offset}, Scale: {scale},Divider: {divider}")
+    current = (adc_value - offset) / scale
     if current < 0:
         current = -1 * current
     return current
@@ -164,7 +165,7 @@ def capture_current_dma():
 
             voltage = adc_value * conversion_factor
             val = calculate_current(voltage, "100U", power_ACS758, Divider)
-            # val = voltage
+            # val = voltage / Divider
             duration = SAMPLE_BUFFER_SIZE * ADC_SAMPLE_TIME_US
             is_signal = val > TRIGGER_THRESHOLD
 
@@ -200,143 +201,92 @@ cached_data = {
 data_changed = False
 
 
-# Кэш для отслеживания того, что уже нарисовано на экране
-display_cache = {
-    "current_value": None,
-    "max_current": None,
-    "signal_detected": None,
-    "spinner_phase": None,
-    "error_state": None
-}
+def update_display():
+    """Update screen with layout for 240x135 display"""
+    global spinner_phase, cached_data, data_changed
 
-def partial_update_display():
-    global spinner_phase, cached_data, data_changed, display_cache
-
-    # Проверяем, можно ли получить блокировку данных без блокирования
-    if not data_lock.acquire(False):
-        # Если блокировка занята, не обновляем экран
-        return
-
-    try:
-        # Получение текущих значений из кэша данных
+    with data_lock:
         if (shared_data["current_value"] != cached_data["current_value"] or
             shared_data["max_current"] != cached_data["max_current"] or
             shared_data["signal_detected"] != cached_data["signal_detected"]):
+            
             cached_data["current_value"] = shared_data["current_value"]
-            cached_data["max_current"] = shared_data["max_current"]
+            cached_data["max_current"] = shared_data["max_current"] 
             cached_data["signal_detected"] = shared_data["signal_detected"]
             data_changed = True
-    finally:
-        data_lock.release()
 
     with spinner_lock:
         current_spinner_phase = spinner_phase
 
-    current_value = cached_data["current_value"]
-    max_current = cached_data["max_current"]
-    signal_detected = cached_data["signal_detected"]
-
-    # Первичная инициализация экрана, если нужно
-    if display_cache["current_value"] is None:
+    if data_changed or current_spinner_phase % 2 == 0:
+        # Use local variables from cache
+        current_value = cached_data["current_value"]
+        max_current = cached_data["max_current"]
+        signal_detected = cached_data["signal_detected"]
+        
+        # Clear the screen
         display.set_pen(BLACK)
         display.clear()
 
+        # --- Top row: status ---
+        status_y = 5
+        # Left side - operation status
+        display.set_pen(GREEN)
+        status_text = "ACTIVE"  # DMA is always active
+        display.text(status_text, 5, status_y, WIDTH, 2)
+
+        # Right side - signal status
+        display.set_pen(GREEN if signal_detected else BLUE)
+        signal_status = "SIGNAL" if signal_detected else ""  # removing READY
+        if signal_status:
+            display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
+
+        # --- Заголовки с подписями current и max ---
         display.set_pen(CYAN)
         display.text("CURRENT", 10, 30, WIDTH, 2)
         display.text("MAX", 130, 30, WIDTH, 2)
 
+        # --- Значения тока и максимального тока ---
+        display.set_pen(WHITE)
+        current_str = f"{current_value:.3f}"
+        display.text(current_str, 10, 55, WIDTH, 3)
+
+        display.set_pen(MAGENTA)
+        peak_str = f"{max_current:.3f}"
+        display.text(peak_str, 130, 55, WIDTH, 3)
+
+        # --- Техническая информация ---
         display.set_pen(YELLOW)
         tech_y = 90
+        # Show fixed frequency 500 kHz
         rate_info = "500.0 kHz"
         display.text(rate_info, 10, tech_y, WIDTH, 2)
 
-        display.set_pen(GREEN)
-        display.text("ACTIV", 10, 5, WIDTH, 2)
+        # Error information, if any
+        if state_error:
+            display.set_pen(RED)
+            display.text("ERROR", WIDTH // 2 - 40, tech_y, WIDTH, 2)
 
+        # --- Button instructions ---
         display.set_pen(CYAN)
-        display.text("Reset", 5, HEIGHT - 15, WIDTH, 1)
+        display.text("Reset", 5, HEIGHT - 15, WIDTH, 1)  # Reset button only
 
-        # Обновляем кэш актуальными значениями, чтобы не было повторной инициализации и затирания
-        display_cache["current_value"] = current_value
-        display_cache["max_current"] = max_current
-        display_cache["signal_detected"] = signal_detected
-        display_cache["spinner_phase"] = None
-        display_cache["error_state"] = None
-
-        display.update()  # Только один раз!
-        return  # Важно: не продолжаем, чтобы не было двойного обновления!
-
-    # --- Динамические обновления ---
-    redraw = False
-
-    if data_changed:
-        # --- Верхняя строка: статус ---
-        if display_cache["signal_detected"] != signal_detected:
-            status_y = 5
-            display.set_pen(GREEN if signal_detected else BLUE)
-            display.set_pen(BLACK)
-            rect_width = 75
-            rect_height = 20
-            display.rectangle(WIDTH - rect_width, status_y, rect_width, rect_height)
-            display.set_pen(GREEN if signal_detected else BLUE)
-            signal_status = "SIGNAL" if signal_detected else ""
-            if signal_status:
-                display.text(signal_status, WIDTH - 75, status_y, WIDTH, 2)
-            display_cache["signal_detected"] = signal_detected
-            redraw = True  # <--- добавлено
-
-        # --- Обновляем значение тока ---
-        if display_cache["current_value"] != current_value:
-            display.set_pen(BLACK)
-            # Очищаем только область значения, не задевая "CURRENT"
-            display.rectangle(10, 55, 100, 25)  # ширина 100, чтобы не затрагивать надпись
-            display.set_pen(WHITE)
-            current_str = f"{current_value:.1f}"
-            display.text(current_str, 10, 55, 100, 3)  # ширина 100
-            display_cache["current_value"] = current_value
-            redraw = True
-
-        # --- Обновляем максимальное значение тока ---
-        if display_cache["max_current"] != max_current:
-            display.set_pen(BLACK)
-            # Очищаем только область значения, не задевая "MAX"
-            display.rectangle(130, 55, 100, 25)  # ширина 100
-            display.set_pen(MAGENTA)
-            peak_str = f"{max_current:.1f}"
-            display.text(peak_str, 130, 55, 100, 3)  # ширина 100
-            display_cache["max_current"] = max_current
-            redraw = True
-
-        # --- Обновляем состояние ошибки ---
-        if display_cache["error_state"] != state_error:
-            tech_y = 90
-            display.set_pen(BLACK)
-            display.rectangle(WIDTH // 2 - 50, tech_y, 100, 20)
-            if state_error:
-                display.set_pen(RED)
-                display.text("ERROR", WIDTH // 2 - 40, tech_y, WIDTH, 2)
-            display_cache["error_state"] = state_error
-            redraw = True  # <--- добавлено
-
-        data_changed = False  # сбрасываем флаг после обработки
-
-    # --- Всегда обновляем анимированный индикатор ---
-    if display_cache["spinner_phase"] != current_spinner_phase:
-        spinner_y = HEIGHT - 32
+        # --- Animated indicator for program operation ---
+        spinner_y = HEIGHT - 32  # slightly above the button label
         spinner_x = WIDTH - 18
-        display.set_pen(BLACK)
-        display.rectangle(spinner_x, spinner_y, 20, 20)
         spinner_char = spinner_chars[current_spinner_phase % len(spinner_chars)]
         spinner_color = spinner_colors[current_spinner_phase % len(spinner_colors)]
         display.set_pen(spinner_color)
         display.text(spinner_char, spinner_x, spinner_y, WIDTH, 2)
-        display_cache["spinner_phase"] = current_spinner_phase
-        redraw = True  # <--- добавлено
-
-    led.set_rgb(*current_to_color(current_value))
-
-    if redraw:
+        
+        # Update display
         display.update()
+        
+        # Set LED color based on current
+        led.set_rgb(*current_to_color(current_value))
+        
+        # Reset data change flag after update
+        data_changed = False
 
 
 def read_buttons():
@@ -357,21 +307,13 @@ adc_dma = Rp2040AdcDmaAveraging(
 
 
 def dma_core1_loop():
-    """Simplified DMA loop with more straightforward logic"""
     while dma_thread_running:
-        # Вызываем capture_current_dma() только если DMA не активен или готов
-        if not dma_active or adc_dma.is_done():
-            capture_current_dma()
-            # После обработки делаем паузу перед следующим циклом
-            utime.sleep_ms(TIMER_PERIOD_MS)
-        else:
-            # DMA в процессе - небольшая пауза перед проверкой снова
-            utime.sleep_ms(1)
+        capture_current_dma()
+        utime.sleep_ms(TIMER_PERIOD_MS)
 
 
-USE_TWO_CORES = True
+USE_TWO_CORES = False
 DISPLAY_UPDATE_MIN_MS = 40 if USE_TWO_CORES else 20
-# DISPLAY_UPDATE_MIN_MS = 50
 
 def main():
     global spinner_phase
@@ -387,7 +329,7 @@ def main():
                 capture_current_dma()
             now = utime.ticks_ms()
             if utime.ticks_diff(now, last_display_update) >= DISPLAY_UPDATE_MIN_MS:
-                partial_update_display()
+                update_display()
                 with spinner_lock:
                     spinner_phase = (spinner_phase + 1) % len(spinner_chars)
                 last_display_update = now
