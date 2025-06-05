@@ -24,6 +24,7 @@ static uint sm_gen, sm_det;
 #define LED_TIME 500
 #define SYS_FREQ 133000
 // #define SYS_FREQ 250000
+#define MIN_TACKT 5
 
 // Initialize PIO for pulse generator
 void init_pulse_generator() {
@@ -138,7 +139,7 @@ uint32_t test_pulse(uint32_t pause_width, bool verbose = true) {
   } else if (verbose) {
     tud_cdc_write_str("Detector FIFO is empty, pause not detected\r\n");
   }
-  
+
   if (verbose) {
     tud_cdc_write_flush();
   }
@@ -156,43 +157,46 @@ uint32_t test_pulse(uint32_t pause_width, bool verbose = true) {
 
 void process_command(const char *input) {
   if (input[0] == 'T' || input[0] == 't') {
-    printf("\n===== Starting pause duration tests (0-1500 cycles) =====\n\n");
+    printf("\n===== Starting pause duration tests (%d-1500 cycles) =====\n\n", MIN_TACKT);
+    printf("Note: Values from 0 to %d are not measured due to hardware limitations.\n\n", MIN_TACKT - 1);
     printf("| %8s | %8s | %10s |\n", "Expected", "Measured", "Difference");
     printf("|----------|----------|------------|\n");
-    
+
     int discrepancyCount = 0;
-    
+
     // Test all values from 0 to 1500
-    for (uint32_t width = 0; width <= 1500; width++) {
-      uint32_t measured = test_pulse(width, false) - 2;  // Disable debug output during tests
+    for (uint32_t width = MIN_TACKT; width <= 1500; width++) {
+      uint32_t measured = test_pulse(width, false) + MIN_TACKT;
       int32_t diff = (int32_t)measured - (int32_t)width;
-      
+
       // Only output values that don't match expectations
       if (diff != 0) {
         printf("| %8d | %8d | %+10d |\n", width, measured, diff);
         discrepancyCount++;
       }
-      
+
       // Display progress every 100 values
       if (width % 100 == 0 && width > 0) {
         printf("Progress: %d/1500 (%.1f%%)\n", width, (width / 1500.0) * 100);
       }
     }
-    
+
     if (discrepancyCount == 0) {
       printf("| All values match expectations! No discrepancies found. |\n");
     } else {
       printf("\nFound %d values with discrepancies\n", discrepancyCount);
     }
-    
+
     printf("\n=========== Test completed ===========\n");
   } else {
     char *endptr;
     int width = strtol(input, &endptr, 10);
     if (endptr != input && width >= 0 && width <= 1500) {
       printf("\n--- Single test with pause: %d cycles ---\n", width);
-      uint32_t measured = test_pulse(width, true);  // Enable detailed output for single test
-      printf("Set pause: %-3d | Measured pause: %-3d cycles\n\n", width, measured);
+      uint32_t measured =
+          test_pulse(width, true); // Enable detailed output for single test
+      printf("Set pause: %-3d | Measured pause: %-3d cycles\n\n", width,
+             measured);
     } else {
       printf("Please enter a value from 0 to 1500, or 'T' to run all tests.\n");
     }
