@@ -22,11 +22,17 @@
 #define LED_TIME  500
 #define SYS_FREQ  133000
 // #define SYS_FREQ 250000
+
+#if SYS_FREQ == 133000
 #define MIN_TACKT 5
+#elif SYS_FREQ == 250000
+#define MIN_TACKT 10
+#endif
+
 #define MAX_CODE  1024
+#define MIN_PULSE_PERIOD 3.0f
 
-
-static constexpr float    MIN_PULSE_PERIOD_US = 3.0f;
+static constexpr float    MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD/2;
 static constexpr float    PIO_FREQ            = SYS_FREQ * 1000.0f;
 static constexpr uint16_t MIN_INTERVAL_CYCLES =
     MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);

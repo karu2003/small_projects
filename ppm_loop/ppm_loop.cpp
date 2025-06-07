@@ -22,9 +22,10 @@ static PIO pio = pio0;
 static uint sm_gen, sm_det;
 
 #define LED_TIME 500
-#define SYS_FREQ 133000
-// #define SYS_FREQ 250000
-#define MIN_TACKT 5
+// #define SYS_FREQ 133000
+// #define MIN_TACKT 5
+#define SYS_FREQ 250000
+#define MIN_TACKT 10
 
 // Initialize PIO for pulse generator
 void init_pulse_generator() {
