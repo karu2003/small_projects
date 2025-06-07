@@ -20,8 +20,8 @@
 #define LED_PIN       25
 
 #define LED_TIME  500
-#define SYS_FREQ  133000
-// #define SYS_FREQ 250000
+// #define SYS_FREQ  133000
+#define SYS_FREQ 250000
 
 #if SYS_FREQ == 133000
 #define MIN_TACKT 5
