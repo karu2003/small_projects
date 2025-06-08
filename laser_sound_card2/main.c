@@ -191,6 +191,45 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const * p_reque
     return true;
 }
 
+bool tud_audio_clock_get_request(uint8_t rhport, audio_control_request_t const *request)
+{
+    if (request->bEntityID == 0x04) {
+        if (request->bControlSelector == AUDIO_CS_CTRL_SAM_FREQ) {
+            // Для запроса о диапазоне частот дискретизации
+            if (request->bRequest == AUDIO_CS_REQ_CUR) {
+                // Текущая частота - 48000 Гц
+                uint32_t sample_rate = 48000;
+                return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const*)request, 
+                                                                &sample_rate, sizeof(sample_rate));
+            } 
+            else if (request->bRequest == AUDIO_CS_REQ_RANGE) {
+                // Поддерживаем только одну частоту - 48000 Гц
+                audio_control_range_4_t range_param;
+                range_param.wNumSubRanges = 1;
+                range_param.subrange[0].bMin = 48000;
+                range_param.subrange[0].bMax = 48000;
+                range_param.subrange[0].bRes = 0;
+
+                return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const*)request, 
+                                                      &range_param, sizeof(range_param));
+            }
+        }
+    }
+    return false;
+}
+
+bool tud_audio_clock_set_request(uint8_t rhport, audio_control_request_t const *request, uint8_t const *data)
+{
+    (void)data;
+    if (request->bEntityID == 0x04) {
+        if (request->bControlSelector == AUDIO_CS_CTRL_SAM_FREQ) {
+            // Принимаем любую частоту в нашем диапазоне (мы поддерживаем только 48000)
+            return true;
+        }
+    }
+    return false;
+}
+
 // Main function for Core1 (USB audio and PPM generation)
 void second_core_main() {
     // Initialize USB
