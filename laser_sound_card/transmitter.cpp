@@ -1,4 +1,5 @@
 #include "common.h"
+#include "usb_descriptors.h"
 #include <bsp/board_api.h>
 #include <iostream>
 #include <string>
@@ -20,7 +21,7 @@ void timer0_irq_handler() {
 
         uint32_t ppm_value;
         if (has_custom_value) {
-            ppm_value = MIN_INTERVAL_CYCLES + ppm_code_to_send;
+            ppm_value        = MIN_INTERVAL_CYCLES + ppm_code_to_send;
             has_custom_value = false;
         }
         else {
@@ -28,7 +29,7 @@ void timer0_irq_handler() {
         }
 
         generate_pulse(ppm_value, false);
-        
+
         // Schedule next interrupt
         timer_hw->alarm[0] = timer_hw->timerawl + AUDIO_FRAME_TICKS;
     }
@@ -36,9 +37,9 @@ void timer0_irq_handler() {
 
 // Initialize PIO for pulse generator
 void init_pulse_generator(float freq) {
-    sm_gen = pio_claim_unused_sm(pio, true);
-    uint offset = pio_add_program(pio, &pulse_generator_program);
-    pio_sm_config c = pulse_generator_program_get_default_config(offset);
+    sm_gen               = pio_claim_unused_sm(pio, true);
+    uint          offset = pio_add_program(pio, &pulse_generator_program);
+    pio_sm_config c      = pulse_generator_program_get_default_config(offset);
 
     // Setup pins for PIO
     sm_config_set_set_pins(&c, PULSE_GEN_PIN, 1);
@@ -56,14 +57,22 @@ void second_core_main() {
     board_init();
     tusb_init();
 
+    // init device stack on configured roothub port
+    tusb_rhport_init_t dev_init = {
+        .role  = TUSB_ROLE_DEVICE,
+        .speed = TUSB_SPEED_AUTO};
+    tusb_init(BOARD_TUD_RHPORT, &dev_init);
+
     if (board_init_after_tusb) {
         board_init_after_tusb();
     }
 
+    TU_LOG1("Laser Audio running\r\n");
+
     init_pulse_generator(PIO_FREQ);
 
     // LED для Core1
-    bool led_state = false;
+    bool            led_state            = false;
     absolute_time_t next_led_toggle_time = make_timeout_time_ms(LED_TIME * 2);
 
     // Setup timer interrupt for audio sampling
@@ -74,7 +83,7 @@ void second_core_main() {
 
     // Main operation loop on Core1
     while (1) {
-        tud_task(); // TinyUSB device task
+        tud_task();    // TinyUSB device task
 
         // Обновление LED индикатора
         if (absolute_time_diff_us(get_absolute_time(), next_led_toggle_time) <= 0) {
