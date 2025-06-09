@@ -96,6 +96,7 @@
         "cinttypes": "cpp",
         "typeinfo": "cpp",
         "variant": "cpp",
-        "tusb.h": "c"
+        "tusb.h": "c",
+        "audioclasscommon.h": "c"
     }
 }

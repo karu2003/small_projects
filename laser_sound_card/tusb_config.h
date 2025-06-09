@@ -47,6 +47,14 @@ extern "C" {
 #define BOARD_TUD_MAX_SPEED   OPT_MODE_DEFAULT_SPEED
 #endif
 
+#if   BOARD_DEVICE_RHPORT_NUM == 0
+#define CFG_TUSB_RHPORT0_MODE     (OPT_MODE_DEVICE | BOARD_DEVICE_RHPORT_SPEED)
+#elif BOARD_DEVICE_RHPORT_NUM == 1
+#define CFG_TUSB_RHPORT1_MODE     (OPT_MODE_DEVICE | BOARD_DEVICE_RHPORT_SPEED)
+#else
+  #error "Incorrect RHPort configuration"
+#endif
+
 //--------------------------------------------------------------------
 // Common Configuration
 //--------------------------------------------------------------------
@@ -63,8 +71,6 @@ extern "C" {
 #ifndef CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG        0
 #endif
-
-#define CFG_TUSB_RHPORT0_MODE   (OPT_MODE_DEVICE | OPT_MODE_FULL_SPEED)
 
 // Enable Device stack
 #define CFG_TUD_ENABLED       1

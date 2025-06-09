@@ -3,9 +3,39 @@
 #include "hardware/timer.h"
 #include <string.h>
 
-// Аудиобуферы для входа и выхода
-int16_t audio_in_buffer[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 2];
-int16_t audio_out_buffer[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 2];
+// Audio controls
+// Current states
+int8_t mute[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];       // +1 for master channel 0
+int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master channel 0
+
+// Buffer for microphone data
+int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
+// Buffer for speaker data
+int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
+// Speaker data size received in the last frame
+int spk_data_size;
+// Resolution per format
+const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
+                                                                        CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
+// Current resolution, update on format change
+uint8_t current_resolution;
+
+/* Blink pattern
+ * - 25 ms   : streaming data
+ * - 250 ms  : device not mounted
+ * - 1000 ms : device mounted
+ * - 2500 ms : device is suspended
+ */
+enum
+{
+  BLINK_STREAMING = 25,
+  BLINK_NOT_MOUNTED = 250,
+  BLINK_MOUNTED = 1000,
+  BLINK_SUSPENDED = 2500,
+};
+
+static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
+
 
 // Буфер для текущих и предыдущих аудиоданных
 volatile uint16_t current_audio_out_sample = 0;

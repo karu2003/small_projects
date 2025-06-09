@@ -40,7 +40,7 @@ static const float    PIO_FREQ            = SYS_FREQ * 1000.0f;
 static const uint16_t MIN_INTERVAL_CYCLES =
     MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);
 static const float    AUDIO_SAMPLE_RATE = 48000.0f;
-static const uint32_t AUDIO_FRAME_TICKS = SYS_FREQ * 10.0 / AUDIO_SAMPLE_RATE;
+static const uint32_t AUDIO_FRAME_TICKS = (uint32_t)((float)SYS_FREQ * 1000.0f / AUDIO_SAMPLE_RATE);
 
 extern int16_t audio_in_buffer[];
 extern int16_t audio_out_buffer[];
