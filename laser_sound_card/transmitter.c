@@ -7,6 +7,7 @@
 const uint32_t sample_rates[] = {44100, AUDIO_SAMPLE_RATE};
 
 uint32_t current_sample_rate = AUDIO_SAMPLE_RATE;
+uint8_t  current_resolution;
 
 #define N_SAMPLE_RATES TU_ARRAY_SIZE(sample_rates)
 
@@ -56,13 +57,10 @@ int spk_data_size;
 // Resolution per format
 const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
                                                                         CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
-// Current resolution, update on format change
-uint8_t current_resolution;
 
 void led_blinking_task(void);
 void audio_task(void);
 void audio_control_task(void);
-
 
 static PIO  pio = pio1;    // Use another PIO to avoid conflicts
 static uint sm_gen;
@@ -70,14 +68,15 @@ static uint sm_gen;
 volatile uint32_t ppm_code_to_send = 0;
 volatile bool     has_custom_value = false;
 
-uint32_t audio_frame_ticks = SYS_FREQ * 1000 / AUDIO_SAMPLE_RATE;
+uint32_t audio_frame_ticks;
 
 void generate_pulse(uint32_t pause_width, bool verbose) {
     pio_sm_put_blocking(pio, sm_gen, pause_width);
 }
 
 uint32_t calculate_audio_frame_ticks() {
-    return SYS_FREQ * 1000 / current_sample_rate;
+    // return clock_get_hz(clk_sys) / current_sample_rate;
+    return 1000000 / current_sample_rate;
 }
 
 // Преобразование 16-битного аудио в 10-битное значение для PPM
@@ -94,7 +93,7 @@ uint32_t audio24_to_ppm(int32_t audio_sample) {
     audio_sample &= 0xFFFFFF;
     if (audio_sample & 0x800000) {
         // Отрицательные числа (старший бит = 1)
-        audio_sample |= 0xFF000000; // Расширение знака
+        audio_sample |= 0xFF000000;    // Расширение знака
     }
     return (uint32_t)((int64_t)audio_sample - INT32_MIN / 256) * 1024 / 16777216;
 }
@@ -172,6 +171,8 @@ void second_core_main() {
 
     // LED для Core1
     bool led_state = false;
+
+    audio_frame_ticks = clock_get_hz(clk_sys) / AUDIO_SAMPLE_RATE;
 
     // Setup timer interrupt for audio sampling
     irq_set_exclusive_handler(TIMER_IRQ_0, timer0_irq_handler);

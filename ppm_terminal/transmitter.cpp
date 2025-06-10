@@ -10,6 +10,9 @@ static uint sm_gen;
 static volatile uint32_t ppm_code_to_send = 0;
 static volatile bool     has_custom_value = false;
 
+uint32_t          current_sample_rate = AUDIO_SAMPLE_RATE;
+volatile uint32_t audio_frame_ticks;
+// volatile  uint32_t audio_frame_ticks = (SYS_FREQ * 1000) / AUDIO_SAMPLE_RATE;
 
 void generate_pulse(uint32_t pause_width, bool verbose) {
     pio_sm_put_blocking(pio, sm_gen, pause_width);
@@ -22,7 +25,7 @@ void timer0_irq_handler() {
         uint32_t ppm_value;
         if (has_custom_value) {
             ppm_value        = MIN_INTERVAL_CYCLES + ppm_code_to_send;
-            has_custom_value = false;
+            // has_custom_value = false;
         }
         else {
             ppm_value = MIN_INTERVAL_CYCLES;
@@ -30,7 +33,7 @@ void timer0_irq_handler() {
 
         generate_pulse(ppm_value, false);
 
-        timer_hw->alarm[0] = timer_hw->timerawl + AUDIO_FRAME_TICKS;
+        timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
     }
 }
 
@@ -90,6 +93,11 @@ void process_received_measurements() {
     }
 }
 
+uint32_t calculate_audio_frame_ticks() {
+    // return (uint32_t)clock_get_hz(clk_sys) / current_sample_rate / 100;
+    return 1000000 / current_sample_rate;
+}
+
 // Main function of Core1 (user interface + transmission)
 void second_core_main() {
     board_init();
@@ -110,10 +118,12 @@ void second_core_main() {
     static uint8_t  led_state            = 0;
     absolute_time_t next_led_toggle_time = make_timeout_time_ms(LED_TIME * 2);
 
+    audio_frame_ticks = calculate_audio_frame_ticks();
+
     irq_set_exclusive_handler(TIMER_IRQ_0, timer0_irq_handler);
     hw_set_bits(&timer_hw->inte, (1u << 0));
     irq_set_enabled(TIMER_IRQ_0, true);
-    timer_hw->alarm[0] = timer_hw->timerawl + AUDIO_FRAME_TICKS;
+    timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
 
     // Main operation loop on Core1
     while (1) {
@@ -128,8 +138,14 @@ void second_core_main() {
                 tud_cdc_write_str(std::to_string(PULSE_GEN_PIN).c_str());
                 tud_cdc_write_str("\r\nDetector Pin: ");
                 tud_cdc_write_str(std::to_string(PULSE_DET_PIN).c_str());
-                tud_cdc_write_str("\r\nClock frequency: ");
+                tud_cdc_write_str("\r\nClock: ");
                 tud_cdc_write_str(std::to_string(clock_get_hz(clk_sys)).c_str());
+                tud_cdc_write_str(" Hz\r\n");
+                tud_cdc_write_str("Frame Ticks: ");
+                tud_cdc_write_str(std::to_string(audio_frame_ticks).c_str());
+                tud_cdc_write_str("\r\n");
+                tud_cdc_write_str("Sample Rate: ");
+                tud_cdc_write_str(std::to_string(current_sample_rate).c_str());
                 tud_cdc_write_str(" Hz\r\n");
                 tud_cdc_write_str("Enter a value from 0 to 1024 to send via PPM.\r\n");
                 tud_cdc_write_flush();
