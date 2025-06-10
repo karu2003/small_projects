@@ -5,26 +5,24 @@ static PIO           pio = pio0;
 static uint          sm_det;
 static volatile bool detector_running = false;
 
-// Последнее полученное PPM значение для аудиоданных
-volatile uint32_t last_ppm_received = 0;
-
 void update_measurements() {
     while (detector_running && !pio_sm_is_rx_fifo_empty(pio, sm_det)) {
-        uint32_t measured_width = pio_sm_get(pio, sm_det);
+        uint32_t measured_width  = pio_sm_get(pio, sm_det);
         uint32_t corrected_width = (measured_width + MIN_TACKT) - MIN_INTERVAL_CYCLES;
 
         if (corrected_width > 0 && corrected_width <= MAX_CODE) {
-            // Сохраняем значение PPM для последующего преобразования в аудио
-            last_ppm_received = corrected_width;
+            if (multicore_fifo_wready()) {
+                multicore_fifo_push_blocking(corrected_width);
+            }
         }
     }
 }
 
 // Initialize PIO for pulse detector
 void init_pulse_detector(float freq) {
-    sm_det = pio_claim_unused_sm(pio, true);
-    uint offset = pio_add_program(pio, &pulse_detector_program);
-    pio_sm_config c = pulse_detector_program_get_default_config(offset);
+    sm_det               = pio_claim_unused_sm(pio, true);
+    uint          offset = pio_add_program(pio, &pulse_detector_program);
+    pio_sm_config c      = pulse_detector_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, PULSE_DET_PIN);
     sm_config_set_jmp_pin(&c, PULSE_DET_PIN);
@@ -46,17 +44,8 @@ void first_core_main() {
     init_pulse_detector(PIO_FREQ);
     start_detector();
 
-    bool led_state = false;
-    absolute_time_t next_led_toggle = make_timeout_time_ms(LED_TIME);
-
     while (1) {
         update_measurements();
-
-        if (absolute_time_diff_us(get_absolute_time(), next_led_toggle) <= 0) {
-            led_state = !led_state;
-            gpio_put(LED_PIN, led_state);
-            next_led_toggle = make_timeout_time_ms(LED_TIME);
-        }
     }
 }
 
