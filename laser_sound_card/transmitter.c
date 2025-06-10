@@ -435,12 +435,13 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
 
 void audio_task(void) {
     // 1. Обработка выходящих данных из USB (динамик) в PPM
-    if (spk_data_size) {
+    if (spk_data_size && !has_custom_value) {  // Проверка, что предыдущее значение уже отправлено
         if (current_resolution == 16) {
             int16_t *src   = (int16_t *)spk_buf;
             int16_t *limit = (int16_t *)spk_buf + spk_data_size / 2;
 
-            while (src < limit) {
+            // Берем только один сэмпл за проход (стерео пара)
+            if (src < limit) {
                 // Объединяем левый и правый каналы в моно
                 int32_t left  = *src++;
                 int32_t right = *src++;
@@ -450,15 +451,22 @@ void audio_task(void) {
                 uint32_t ppm_value = audio_to_ppm(mono);
                 ppm_code_to_send   = ppm_value;
                 has_custom_value   = true;
+                
+                // Сдвигаем оставшиеся данные в начало буфера
+                if (src < limit) {
+                    memmove(spk_buf, src, (uint8_t*)limit - (uint8_t*)src);
+                    spk_data_size = (uint8_t*)limit - (uint8_t*)src;
+                } else {
+                    spk_data_size = 0;
+                }
             }
-
-            spk_data_size = 0;
         }
         else if (current_resolution == 24) {
             int32_t *src   = spk_buf;
             int32_t *limit = spk_buf + spk_data_size / 4;
 
-            while (src < limit) {
+            // Берем только один сэмпл за проход (стерео пара)
+            if (src < limit) {
                 // Объединяем левый и правый каналы в моно
                 int32_t left  = *src++;
                 int32_t right = *src++;
@@ -468,9 +476,15 @@ void audio_task(void) {
                 uint32_t ppm_value = audio24_to_ppm(mono);
                 ppm_code_to_send   = ppm_value;
                 has_custom_value   = true;
+                
+                // Сдвигаем оставшиеся данные в начало буфера
+                if (src < limit) {
+                    memmove(spk_buf, src, (uint8_t*)limit - (uint8_t*)src);
+                    spk_data_size = (uint8_t*)limit - (uint8_t*)src;
+                } else {
+                    spk_data_size = 0;
+                }
             }
-
-            spk_data_size = 0;
         }
     }
 
