@@ -489,16 +489,18 @@ THD: {results['thd_percent']:.2f}%
 
         # 1. График исходных сигналов с учетом смещения
         start_offset = results.get("start_offset", 0)
-        t_orig = np.linspace(0, len(test_signal) / self.sample_rate, len(test_signal))
-        t_rec_adjusted = np.linspace(
-            start_offset / self.sample_rate,
-            (len(recorded_data) + start_offset) / self.sample_rate,
-            len(recorded_data),
-        )
+        delay_samples = results.get("delay_samples", 0)
+        total_offset = start_offset + delay_samples  # Общее смещение между сигналами
+
+        # Конвертируем временные шкалы из секунд в миллисекунды
+        t_orig = np.linspace(0, len(test_signal) / self.sample_rate * 1000, len(test_signal))
+        t_rec = np.linspace(0, len(recorded_data) / self.sample_rate * 1000, len(recorded_data))
 
         samples_to_show = min(
             1000 if mode == "loop" else 5000, len(test_signal), len(recorded_data)
         )
+
+        # Отрисовка с правильным смещением, время в миллисекундах
         axes[0, 0].plot(
             t_orig[:samples_to_show],
             test_signal[:samples_to_show],
@@ -507,46 +509,31 @@ THD: {results['thd_percent']:.2f}%
             label="Исходный",
         )
         axes[0, 0].plot(
-            t_rec_adjusted[:samples_to_show],
+            t_orig[:samples_to_show] + total_offset/self.sample_rate * 1000,  # Сдвигаем график и переводим в мс
             recorded_data[:samples_to_show],
             "r-",
             alpha=0.7,
             label="Записанный",
         )
 
-        # Отображение смещения
-        delay_samples = results.get("delay_samples", 0)
-        if delay_samples > 0:
-            axes[0, 0].annotate(
-                "",
-                xy=(delay_samples / self.sample_rate, 0),
-                xytext=(0, 0),
-                arrowprops=dict(arrowstyle="<->", color="green", lw=2),
-            )
-            axes[0, 0].text(
-                delay_samples / (2 * self.sample_rate),
-                0.05,
-                f"Задержка: {results.get('delay_ms', 0):.1f} мс",
-                color="green",
-                ha="center",
-            )
-        else:
-            axes[0, 0].annotate(
-                "",
-                xy=(0, 0),
-                xytext=(-delay_samples / self.sample_rate, 0),
-                arrowprops=dict(arrowstyle="<->", color="green", lw=2),
-            )
-            axes[0, 0].text(
-                -delay_samples / (2 * self.sample_rate),
-                0.05,
-                f"Задержка: {-results.get('delay_ms', 0):.1f} мс",
-                color="green",
-                ha="center",
-            )
+        # Отображение задержки стрелкой
+        total_delay_ms = total_offset * 1000 / self.sample_rate
+        axes[0, 0].annotate(
+            "",
+            xy=(total_offset / self.sample_rate * 1000, 0),  # Переводим в мс
+            xytext=(0, 0),
+            arrowprops=dict(arrowstyle="<->", color="green", lw=2),
+        )
+        axes[0, 0].text(
+            total_offset / (2 * self.sample_rate) * 1000,  # Переводим в мс
+            0.05,
+            f"Задержка: {total_delay_ms:.1f} мс",
+            color="green",
+            ha="center",
+        )
 
         axes[0, 0].set_title("Исходные сигналы с задержкой")
-        axes[0, 0].set_xlabel("Время (с)")
+        axes[0, 0].set_xlabel("Время (мс)")  # Изменена единица измерения
         axes[0, 0].set_ylabel("Амплитуда")
         axes[0, 0].legend()
         axes[0, 0].grid(True)
@@ -554,7 +541,7 @@ THD: {results['thd_percent']:.2f}%
         # 2. График выровненных сигналов
         if len(original_aligned) > 0 and len(recorded_aligned) > 0:
             t_aligned = np.linspace(
-                0, len(original_aligned) / self.sample_rate, len(original_aligned)
+                0, len(original_aligned) / self.sample_rate * 1000, len(original_aligned)  # Переводим в мс
             )
             samples_to_show = min(1000, len(original_aligned))
 
@@ -573,17 +560,17 @@ THD: {results['thd_percent']:.2f}%
             axes[1, 0].set_title(
                 "Выровненные сигналы" + (" с компенсацией" if mode == "normal" else "")
             )
-            axes[1, 0].set_xlabel("Время (с)")
+            axes[1, 0].set_xlabel("Время (мс)")  # Изменена единица измерения
             axes[1, 0].set_ylabel("Амплитуда")
             axes[1, 0].legend()
             axes[1, 0].grid(True)
         else:
             # Если нет выровненных данных, показываем спектрограмму
             f, t_spec, Sxx = signal.spectrogram(test_signal, self.sample_rate)
-            axes[1, 0].pcolormesh(t_spec, f, 10 * np.log10(Sxx), shading="gouraud")
+            axes[1, 0].pcolormesh(t_spec * 1000, f, 10 * np.log10(Sxx), shading="gouraud")  # t_spec в мс
             axes[1, 0].set_title("Спектрограмма исходного сигнала")
             axes[1, 0].set_ylabel("Частота [Гц]")
-            axes[1, 0].set_xlabel("Время [с]")
+            axes[1, 0].set_xlabel("Время [мс]")  # Изменена единица измерения
 
         # 3. Спектры мощности
         freqs_orig, psd_orig = (
