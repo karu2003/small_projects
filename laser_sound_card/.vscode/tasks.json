@@ -6,7 +6,10 @@
             "type": "process",
             "isBuildCommand": true,
             "command": "${userHome}/.pico-sdk/ninja/v1.12.1/ninja",
-            "args": ["-C", "${workspaceFolder}/build"],
+            "args": [
+                "-C",
+                "${workspaceFolder}/build"
+            ],
             "group": "build",
             "presentation": {
                 "reveal": "always",
@@ -53,6 +56,46 @@
             "windows": {
                 "command": "${env:USERPROFILE}/.pico-sdk/openocd/0.12.0+dev/openocd.exe",
             }
-        }
+        },
+        {
+            "label": "Flash Audio Card(SWD)",
+            "type": "process",
+            "command": "${userHome}/.pico-sdk/openocd/0.12.0+dev/openocd.exe",
+            "args": [
+                "-s",
+                "${userHome}/.pico-sdk/openocd/0.12.0+dev/scripts",
+                "-f",
+                "interface/cmsis-dap.cfg",
+                "-f",
+                "target/rp2040.cfg",
+                "-c",
+                "adapter speed 5000; program \"${workspaceFolder}/build/laser_sound.elf\" verify reset exit"
+            ],
+            "problemMatcher": [],
+            "windows": {
+                "command": "${env:USERPROFILE}/.pico-sdk/openocd/0.12.0+dev/openocd.exe"
+            }
+        },
+        // {
+        //     "label": "Configure Ninja",
+        //     "type": "process",
+        //     "command": "${userHome}/.pico-sdk/cmake/v3.31.5/bin/cmake",
+        //     "args": [
+        //         "-B",
+        //         "${workspaceFolder}/build",
+        //         "-S",
+        //         "${workspaceFolder}",
+        //         "-G", 
+        //         "Ninja"
+        //     ],
+        //     "presentation": {
+        //         "reveal": "always",
+        //         "panel": "dedicated"
+        //     },
+        //     "problemMatcher": [],
+        //     "windows": {
+        //         "command": "${env:USERPROFILE}/.pico-sdk/cmake/v3.31.5/bin/cmake.exe"
+        //     }
+        // }
     ]
 }
