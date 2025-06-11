@@ -79,39 +79,53 @@ uint32_t calculate_audio_frame_ticks() {
     return 1000000 / current_sample_rate;
 }
 
-// Преобразование 16-битного аудио в 10-битное значение для PPM
+// Преобразование 16-битного PCM в 10-битное значение для PPM
 uint32_t audio_to_ppm(int16_t audio_sample) {
-    // Нормализация 16-битного значения (-32768...32767) до диапазона 0-1023 (10 бит)
-    // Используем полный диапазон для лучшей точности
-    return (uint32_t)((int32_t)audio_sample - INT16_MIN) * 1024 / 65536;
+    // Сдвиг от знакового диапазона [-32768, 32767] к беззнаковому [0, 65535]
+    uint32_t unsigned_sample = (uint32_t)((int32_t)audio_sample + 32768);
+    
+    // Масштабирование от 16-бит (0-65535) к 10-бит (0-1023)
+    // Используем округление для лучшей точности
+    return (unsigned_sample * 1023 + 32767) / 65535;
 }
 
-// Преобразование 24-битного аудио в 10-битное значение для PPM
+// Преобразование 24-битного PCM в 10-битное значение для PPM
 uint32_t audio24_to_ppm(int32_t audio_sample) {
-    // Нормализация 24-битного значения (-8388608...8388607) до диапазона 0-1023 (10 бит)
-    // 24-бит использует 3 байта, поэтому маска 0xFFFFFF
-    audio_sample &= 0xFFFFFF;
-    if (audio_sample & 0x800000) {
-        // Отрицательные числа (старший бит = 1)
-        audio_sample |= 0xFF000000;    // Расширение знака
-    }
-    return (uint32_t)((int64_t)audio_sample - INT32_MIN / 256) * 1024 / 16777216;
+    // Убеждаемся, что это валидное 24-битное значение
+    audio_sample = (audio_sample << 8) >> 8;  // Расширение знака для 24-бит
+    
+    // Сдвиг от знакового диапазона [-8388608, 8388607] к беззнаковому [0, 16777215]
+    uint32_t unsigned_sample = (uint32_t)((int64_t)audio_sample + 8388608);
+    
+    // Масштабирование от 24-бит (0-16777215) к 10-бит (0-1023)
+    return (unsigned_sample * 1023 + 8388607) / 16777215;
 }
 
-// Преобразование 10-битного PPM обратно в 16-битное аудио
+// Преобразование 10-битного PPM обратно в 16-битное PCM
 int16_t ppm_to_audio(uint32_t ppm_value) {
-    // Убеждаемся, что ppm_value находится в диапазоне 0-1023
-    ppm_value &= 0x3FF;
-    // Преобразование из диапазона 0-1023 в -32768...32767
-    return (int16_t)((int32_t)ppm_value * 65536 / 1024 + INT16_MIN);
+    // Ограничиваем диапазон
+    ppm_value &= 0x3FF;  // 0-1023
+    
+    // Масштабирование от 10-бит (0-1023) к 16-бит (0-65535)
+    uint32_t unsigned_sample = (ppm_value * 65535 + 511) / 1023;
+    
+    // Сдвиг обратно к знаковому диапазону
+    return (int16_t)((int32_t)unsigned_sample - 32768);
 }
 
-// Преобразование 10-битного PPM обратно в 24-битное аудио
+// Преобразование 10-битного PPM обратно в 24-битное PCM
 int32_t ppm_to_audio24(uint32_t ppm_value) {
-    // Убеждаемся, что ppm_value находится в диапазоне 0-1023
-    ppm_value &= 0x3FF;
-    // Преобразование из диапазона 0-1023 в -8388608...8388607
-    return (int32_t)((int64_t)ppm_value * 16777216 / 1024 + INT32_MIN / 256);
+    // Ограничиваем диапазон
+    ppm_value &= 0x3FF;  // 0-1023
+    
+    // Масштабирование от 10-бит (0-1023) к 24-бит (0-16777215)
+    uint32_t unsigned_sample = (ppm_value * 16777215 + 511) / 1023;
+    
+    // Сдвиг обратно к знаковому диапазону
+    int32_t signed_sample = (int32_t)((int64_t)unsigned_sample - 8388608);
+    
+    // Убеждаемся, что результат помещается в 24 бита
+    return (signed_sample << 8) >> 8;
 }
 
 void timer0_irq_handler() {
@@ -125,6 +139,7 @@ void timer0_irq_handler() {
         }
         else {
             ppm_value = MIN_INTERVAL_CYCLES;
+            // ppm_value = MIN_INTERVAL_CYCLES + ppm_code_to_send;
         }
 
         generate_pulse(ppm_value, false);
@@ -172,7 +187,7 @@ void second_core_main() {
     // LED для Core1
     bool led_state = false;
 
-    audio_frame_ticks = clock_get_hz(clk_sys) / AUDIO_SAMPLE_RATE;
+    audio_frame_ticks = 1000000 / AUDIO_SAMPLE_RATE;
 
     // Setup timer interrupt for audio sampling
     irq_set_exclusive_handler(TIMER_IRQ_0, timer0_irq_handler);
@@ -413,29 +428,46 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
     return true;
 }
 
+volatile bool spk_buffer_busy = false;
+
+// Модифицируем функцию приема данных USB
 bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
     (void)rhport;
     (void)func_id;
     (void)ep_out;
     (void)cur_alt_setting;
 
+    if (spk_buffer_busy) {
+        return false;
+    }
+
     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+    if (spk_data_size > 0) {
+        spk_buffer_busy = true;
+    }
+
     return true;
 }
 
-bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, uint8_t cur_alt_setting) {
-    (void)rhport;
-    (void)itf;
-    (void)ep_in;
-    (void)cur_alt_setting;
+// void tud_log_handler(uint8_t level, const char *fmt, ...)
+// {
+//     (void)level;
+//     va_list args;
+//     va_start(args, fmt);
+//     char buf[256];
+//     vsnprintf(buf, sizeof(buf), fmt, args);
 
-    // This callback could be used to fill microphone data separately
-    return true;
-}
+//     // Для ITM/SWO трассировки через SWD
+//     for(size_t i = 0; buf[i] != 0; i++) {
+//         ITM_SendChar(buf[i]);
+//     }
+
+//     va_end(args);
+// }
 
 void audio_task(void) {
     // 1. Обработка выходящих данных из USB (динамик) в PPM
-    if (spk_data_size && !has_custom_value) {  // Проверка, что предыдущее значение уже отправлено
+    if (spk_data_size && !has_custom_value) {
         if (current_resolution == 16) {
             int16_t *src   = (int16_t *)spk_buf;
             int16_t *limit = (int16_t *)spk_buf + spk_data_size / 2;
@@ -451,13 +483,15 @@ void audio_task(void) {
                 uint32_t ppm_value = audio_to_ppm(mono);
                 ppm_code_to_send   = ppm_value;
                 has_custom_value   = true;
-                
+
                 // Сдвигаем оставшиеся данные в начало буфера
                 if (src < limit) {
-                    memmove(spk_buf, src, (uint8_t*)limit - (uint8_t*)src);
-                    spk_data_size = (uint8_t*)limit - (uint8_t*)src;
-                } else {
-                    spk_data_size = 0;
+                    memmove(spk_buf, src, (uint8_t *)limit - (uint8_t *)src);
+                    spk_data_size = (uint8_t *)limit - (uint8_t *)src;
+                }
+                else {
+                    spk_data_size   = 0;
+                    spk_buffer_busy = false;
                 }
             }
         }
@@ -476,13 +510,15 @@ void audio_task(void) {
                 uint32_t ppm_value = audio24_to_ppm(mono);
                 ppm_code_to_send   = ppm_value;
                 has_custom_value   = true;
-                
+
                 // Сдвигаем оставшиеся данные в начало буфера
                 if (src < limit) {
-                    memmove(spk_buf, src, (uint8_t*)limit - (uint8_t*)src);
-                    spk_data_size = (uint8_t*)limit - (uint8_t*)src;
-                } else {
-                    spk_data_size = 0;
+                    memmove(spk_buf, src, (uint8_t *)limit - (uint8_t *)src);
+                    spk_data_size = (uint8_t *)limit - (uint8_t *)src;
+                }
+                else {
+                    spk_data_size   = 0;
+                    spk_buffer_busy = false;
                 }
             }
         }

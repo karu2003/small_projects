@@ -37,6 +37,12 @@ extern "C" {
 // Board Specific Configuration
 //--------------------------------------------------------------------+
 
+// // Уровень логирования (0-3)
+// #define CFG_TUSB_DEBUG 3
+
+// // Перенаправление логов через SWO
+// #define CFG_TUSB_DEBUG_SWO 1
+
 // RHPort number used for device can be defined by board.mk, default to port 0
 #ifndef BOARD_TUD_RHPORT
 #define BOARD_TUD_RHPORT      0
