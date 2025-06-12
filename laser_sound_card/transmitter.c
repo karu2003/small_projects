@@ -80,9 +80,9 @@ int8_t  mute[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];      // +1 for master chan
 int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master channel 0
 
 // Buffer for microphone data
-int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
+int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 2];
 // Buffer for speaker data
-int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
+int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 2];
 // Speaker data size received in the last frame
 volatile int spk_data_size;
 // Resolution per format
@@ -516,35 +516,38 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
 //     return true;
 // }
 
-bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
-    (void)rhport;
-    (void)func_id;
-    (void)cur_alt_setting;
+// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
+//     (void)rhport;
+//     (void)func_id;
+//     (void)cur_alt_setting;
 
-    // Если буфер занят, отказываемся принимать новые данные
-    if (spk_buffer_busy) {
-        // Сообщаем об этом для отладки
-        static uint32_t last_busy_log = 0;
-        if (board_millis() - last_busy_log > 50) {
-            last_busy_log = board_millis();
-            printf("USB: Device busy, NAK sent\r\n");
-        }
+//     // Если буфер занят, отказываемся принимать новые данные
+//     if (spk_buffer_busy) {
+//         // Сообщаем об этом для отладки
+//         static uint32_t last_busy_log = 0;
+//         if (board_millis() - last_busy_log > 50) {
+//             last_busy_log = board_millis();
+//             printf("USB: Device busy, NAK sent\r\n");
+//         }
 
-        // Просим TinyUSB отправить NAK пакет
-        // tud_edpt_stall(ep_out);
-        return false;
-    }
+//         // Просим TinyUSB отправить NAK пакет
+//         // tud_edpt_stall(ep_out);
+//         return false;
+//     }
 
-    spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
-    if (spk_data_size > 0) {
-        spk_buffer_busy = true;
-    }
+//     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+//     if (spk_data_size > 0) {
+//         spk_buffer_busy = true;
+//     }
 
-    return true;
-}
+//     return true;
+// }
 
 void audio_task(void) {
     // Вывод статистики FIFO раз в секунду
+
+    uint16_t length = (uint16_t)(current_sample_rate / 1000 * CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_RX * CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX);
+
     static uint32_t last_stats_time = 0;
     if (board_millis() - last_stats_time > 1000) {
         last_stats_time = board_millis();
@@ -565,6 +568,8 @@ void audio_task(void) {
                fifo_empty_count,
                fifo_usage,
                PPM_FIFO_SIZE);
+
+        printf("length=%u", length);
     }
 
     if (spk_data_size) {

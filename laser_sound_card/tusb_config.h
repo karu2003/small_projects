@@ -139,6 +139,7 @@ extern "C" {
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX                  16
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX          2
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX                  16
+#define CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_RX                   2
 
 #if defined(__RX__)
 // 8bit in 8bit slots
