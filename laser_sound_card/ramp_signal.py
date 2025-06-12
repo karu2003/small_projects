@@ -52,38 +52,40 @@ class AudioRampGenerator:
         return None
 
     def generate_ramp_signal(self, duration=10.0, ramp_type="linear"):
-        """Генерация плавно нарастающего сигнала заданной длительности"""
+        """Генерация сигнала заданной длительности в диапазоне от -1 до 1"""
         # Расчет количества отсчетов
         num_samples = int(self.sample_rate * duration)
         
         if ramp_type == "linear":
-            # Линейно нарастающий сигнал от 0 до максимума
-            signal_data = np.linspace(0, self.amplitude, num_samples)
+            # Линейно нарастающий сигнал от -amplitude до +amplitude
+            signal_data = np.linspace(-self.amplitude, self.amplitude, num_samples)
         elif ramp_type == "triangle":
             # Треугольный сигнал (нарастание и спад)
             half_samples = num_samples // 2
-            rising = np.linspace(0, self.amplitude, half_samples)
-            falling = np.linspace(self.amplitude, 0, num_samples - half_samples)
+            rising = np.linspace(-self.amplitude, self.amplitude, half_samples)
+            falling = np.linspace(self.amplitude, -self.amplitude, num_samples - half_samples)
             signal_data = np.concatenate((rising, falling))
         elif ramp_type == "exponential":
-            # Экспоненциально нарастающий сигнал
-            x = np.linspace(0, 5, num_samples)  # Диапазон от 0 до 5 для экспоненты
-            signal_data = (np.exp(x) - 1) / (np.exp(5) - 1) * self.amplitude
+            # Экспоненциально нарастающий сигнал от -amplitude до +amplitude
+            x = np.linspace(0, 10, num_samples)
+            exp_curve = (np.exp(x) - 1) / (np.exp(10) - 1)
+            signal_data = (2 * exp_curve - 1) * self.amplitude
         elif ramp_type == "logarithmic":
-            # Логарифмически нарастающий сигнал
-            x = np.linspace(1, 10, num_samples)  # Начинаем с 1 для избежания log(0)
-            signal_data = np.log(x) / np.log(10) * self.amplitude
+            # Логарифмически нарастающий сигнал от -amplitude до +amplitude
+            x = np.linspace(1, 10, num_samples)
+            log_curve = np.log(x) / np.log(10)
+            signal_data = (2 * log_curve - 1) * self.amplitude
         elif ramp_type == "sine_sweep":
             # Синусоидальная частотная развертка от 20 Гц до 20 кГц
             t = np.linspace(0, duration, num_samples)
-            # Фаза зависит от частоты, которая меняется экспоненциально
             phase = 2 * np.pi * 20 * duration / np.log(20000/20) * (np.exp(t/duration * np.log(20000/20)) - 1)
-            signal_data = self.amplitude * np.sin(phase)
+            signal_data = self.amplitude * np.sin(phase)  # синус уже даёт диапазон от -amplitude до +amplitude
         else:
             print(f"Неизвестный тип сигнала: {ramp_type}. Использую линейную рампу.")
-            signal_data = np.linspace(0, self.amplitude, num_samples)
+            signal_data = np.linspace(-self.amplitude, self.amplitude, num_samples)
             
         print(f"Создан сигнал типа {ramp_type}: {num_samples} отсчетов, {duration:.2f} секунд")
+        print(f"Диапазон сигнала: от {np.min(signal_data):.2f} до {np.max(signal_data):.2f}")
         return signal_data.astype(np.float32)
 
     def play_signal(self, signal_data):

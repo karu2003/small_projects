@@ -69,8 +69,8 @@ pico_set_program_name(laser_sound "laser_sound")
 pico_set_program_version(laser_sound "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(laser_sound 0)
-pico_enable_stdio_usb(laser_sound 0)
+# pico_enable_stdio_uart(laser_sound 0)
+# pico_enable_stdio_usb(laser_sound 0)
 target_link_libraries(
   laser_sound PUBLIC pico_stdlib hardware_pio hardware_clocks pico_multicore
                      tinyusb_device tinyusb_board)

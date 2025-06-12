@@ -1,4 +1,5 @@
 #include "common.h"
+#include "hardware/uart.h"
 #include "usb_descriptors.h"
 #include <bsp/board_api.h>
 #include <string.h>
@@ -8,6 +9,36 @@ const uint32_t sample_rates[] = {44100, AUDIO_SAMPLE_RATE};
 
 uint32_t current_sample_rate = AUDIO_SAMPLE_RATE;
 uint8_t  current_resolution;
+
+#define UART_ID   uart0
+#define BAUD_RATE 115200
+
+#define UART_TX_PIN 16    // GPIO16 - UART0 TX
+#define UART_RX_PIN 17    // GPIO17 - UART0 RX
+
+#define PPM_FIFO_SIZE 256
+volatile uint32_t ppm_fifo[PPM_FIFO_SIZE];
+volatile uint8_t  ppm_fifo_head = 0;
+volatile uint8_t  ppm_fifo_tail = 0;
+
+volatile uint32_t fifo_push_count  = 0;
+volatile uint32_t fifo_pop_count   = 0;
+volatile uint32_t fifo_full_count  = 0;
+volatile uint32_t fifo_empty_count = 0;
+
+volatile bool spk_buffer_busy = false;
+
+void setup_uart() {
+    // Инициализация UART0
+    uart_init(UART_ID, BAUD_RATE);
+
+    // Установка функций на GPIO
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    // Перенаправление стандартного вывода на UART
+    stdio_uart_init();
+}
 
 #define N_SAMPLE_RATES TU_ARRAY_SIZE(sample_rates)
 
@@ -53,7 +84,7 @@ int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
 // Buffer for speaker data
 int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
 // Speaker data size received in the last frame
-int spk_data_size;
+volatile int spk_data_size;
 // Resolution per format
 const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
                                                                         CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
@@ -66,7 +97,6 @@ static PIO  pio = pio1;    // Use another PIO to avoid conflicts
 static uint sm_gen;
 
 volatile uint32_t ppm_code_to_send = 0;
-volatile bool     has_custom_value = false;
 
 uint32_t audio_frame_ticks;
 
@@ -81,34 +111,39 @@ uint32_t calculate_audio_frame_ticks() {
 
 // Преобразование 16-битного PCM в 10-битное значение для PPM
 uint32_t audio_to_ppm(int16_t audio_sample) {
-    // Сдвиг от знакового диапазона [-32768, 32767] к беззнаковому [0, 65535]
-    uint32_t unsigned_sample = (uint32_t)((int32_t)audio_sample + 32768);
-    
-    // Масштабирование от 16-бит (0-65535) к 10-бит (0-1023)
-    // Используем округление для лучшей точности
-    return (unsigned_sample * 1023 + 32767) / 65535;
+    if (audio_sample >= 0) {
+        // [0, 32767] -> [511, 1023]
+        return 511 + (uint32_t)((uint64_t)audio_sample * 512 / 32767);
+    }
+    else {
+        // [-32768, -1] -> [0, 510]
+        return 511 - (uint32_t)((uint64_t)(-audio_sample - 1) * 511 / 32767) - 1;
+    }
 }
 
 // Преобразование 24-битного PCM в 10-битное значение для PPM
 uint32_t audio24_to_ppm(int32_t audio_sample) {
     // Убеждаемся, что это валидное 24-битное значение
-    audio_sample = (audio_sample << 8) >> 8;  // Расширение знака для 24-бит
-    
-    // Сдвиг от знакового диапазона [-8388608, 8388607] к беззнаковому [0, 16777215]
-    uint32_t unsigned_sample = (uint32_t)((int64_t)audio_sample + 8388608);
-    
-    // Масштабирование от 24-бит (0-16777215) к 10-бит (0-1023)
-    return (unsigned_sample * 1023 + 8388607) / 16777215;
+    audio_sample = (audio_sample << 8) >> 8;    // Расширение знака для 24-бит
+
+    if (audio_sample >= 0) {
+        // [0, 8388607] -> [511, 1023]
+        return 511 + (uint32_t)((uint64_t)audio_sample * 512 / 8388607);
+    }
+    else {
+        // [-8388608, -1] -> [0, 510]
+        return 511 - (uint32_t)((uint64_t)(-audio_sample - 1) * 511 / 8388607) - 1;
+    }
 }
 
 // Преобразование 10-битного PPM обратно в 16-битное PCM
 int16_t ppm_to_audio(uint32_t ppm_value) {
     // Ограничиваем диапазон
-    ppm_value &= 0x3FF;  // 0-1023
-    
+    ppm_value &= 0x3FF;    // 0-1023
+
     // Масштабирование от 10-бит (0-1023) к 16-бит (0-65535)
     uint32_t unsigned_sample = (ppm_value * 65535 + 511) / 1023;
-    
+
     // Сдвиг обратно к знаковому диапазону
     return (int16_t)((int32_t)unsigned_sample - 32768);
 }
@@ -116,37 +151,41 @@ int16_t ppm_to_audio(uint32_t ppm_value) {
 // Преобразование 10-битного PPM обратно в 24-битное PCM
 int32_t ppm_to_audio24(uint32_t ppm_value) {
     // Ограничиваем диапазон
-    ppm_value &= 0x3FF;  // 0-1023
-    
+    ppm_value &= 0x3FF;    // 0-1023
+
     // Масштабирование от 10-бит (0-1023) к 24-бит (0-16777215)
     uint32_t unsigned_sample = (ppm_value * 16777215 + 511) / 1023;
-    
+
     // Сдвиг обратно к знаковому диапазону
     int32_t signed_sample = (int32_t)((int64_t)unsigned_sample - 8388608);
-    
+
     // Убеждаемся, что результат помещается в 24 бита
     return (signed_sample << 8) >> 8;
 }
 
-void timer0_irq_handler() {
-    if (timer_hw->intr & (1u << 0)) {
-        timer_hw->intr = 1u << 0;
-
-        uint32_t ppm_value;
-        if (has_custom_value) {
-            ppm_value        = MIN_INTERVAL_CYCLES + ppm_code_to_send;
-            has_custom_value = false;
-        }
-        else {
-            ppm_value = MIN_INTERVAL_CYCLES;
-            // ppm_value = MIN_INTERVAL_CYCLES + ppm_code_to_send;
-        }
-
-        generate_pulse(ppm_value, false);
-
-        // Schedule next interrupt
-        timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
+static inline bool ppm_fifo_push(uint32_t value) {
+    uint8_t next_head = (ppm_fifo_head + 1) % PPM_FIFO_SIZE;
+    if (next_head == ppm_fifo_tail) {
+        // FIFO полон
+        fifo_full_count++;
+        return false;
     }
+    ppm_fifo[ppm_fifo_head] = value;
+    ppm_fifo_head           = next_head;
+    fifo_push_count++;
+    return true;
+}
+
+static inline bool ppm_fifo_pop(uint32_t *value) {
+    if (ppm_fifo_head == ppm_fifo_tail) {
+        // FIFO пуст
+        fifo_empty_count++;
+        return false;
+    }
+    *value        = ppm_fifo[ppm_fifo_tail];
+    ppm_fifo_tail = (ppm_fifo_tail + 1) % PPM_FIFO_SIZE;
+    fifo_pop_count++;
+    return true;
 }
 
 // Initialize PIO for pulse generator
@@ -166,10 +205,34 @@ void init_pulse_generator(float freq) {
     pio_sm_set_enabled(pio, sm_gen, true);
 }
 
+void timer0_irq_handler() {
+    if (timer_hw->intr & (1u << 0)) {
+        timer_hw->intr = 1u << 0;
+
+        static uint32_t irq_count = 0;
+        irq_count++;
+
+        uint32_t ppm_value;
+        if (ppm_fifo_pop(&ppm_value)) {
+            generate_pulse(MIN_INTERVAL_CYCLES + ppm_value, false);
+
+            // if (irq_count % 500 == 0) {
+            //     printf("IRQ #%lu: PPM=%u\r\n", irq_count, ppm_value);
+            // }
+        }
+        else {
+            generate_pulse(MIN_INTERVAL_CYCLES, false);    // тишина
+        }
+
+        timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
+    }
+}
+
 // Main function of Core1 (audio transmission)
 void second_core_main() {
     board_init();
     tusb_init();
+    setup_uart();
 
     tusb_rhport_init_t dev_init = {
         .role  = TUSB_ROLE_DEVICE,
@@ -181,6 +244,7 @@ void second_core_main() {
     }
 
     TU_LOG1("Laser Audio running\r\n");
+    stdio_init_all();
 
     init_pulse_generator(PIO_FREQ);
 
@@ -195,6 +259,12 @@ void second_core_main() {
     irq_set_enabled(TIMER_IRQ_0, true);
 
     timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
+
+    // printf("Test: PCM max (32767) -> PPM=%u\n", audio_to_ppm(32767));
+    // printf("Test: PCM half (16384) -> PPM=%u\n", audio_to_ppm(16384));
+    // printf("Test: PCM zero (0) -> PPM=%u\n", audio_to_ppm(0));
+    // printf("Test: PCM zero (-16384) -> PPM=%u\n", audio_to_ppm(-16384));
+    // printf("Test: PCM max (-32767) -> PPM=%u\n", audio_to_ppm(-32767));
 
     // Main operation loop on Core1
     while (1) {
@@ -428,16 +498,40 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
     return true;
 }
 
-volatile bool spk_buffer_busy = false;
+// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
+//     (void)rhport;
+//     (void)func_id;
+//     (void)ep_out;
+//     (void)cur_alt_setting;
 
-// Модифицируем функцию приема данных USB
+//     if (spk_buffer_busy) {
+//         return false;
+//     }
+
+//     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+//     if (spk_data_size > 0) {
+//         spk_buffer_busy = true;
+//     }
+
+//     return true;
+// }
+
 bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
     (void)rhport;
     (void)func_id;
-    (void)ep_out;
     (void)cur_alt_setting;
 
+    // Если буфер занят, отказываемся принимать новые данные
     if (spk_buffer_busy) {
+        // Сообщаем об этом для отладки
+        static uint32_t last_busy_log = 0;
+        if (board_millis() - last_busy_log > 50) {
+            last_busy_log = board_millis();
+            printf("USB: Device busy, NAK sent\r\n");
+        }
+
+        // Просим TinyUSB отправить NAK пакет
+        // tud_edpt_stall(ep_out);
         return false;
     }
 
@@ -449,118 +543,115 @@ bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, ui
     return true;
 }
 
-// void tud_log_handler(uint8_t level, const char *fmt, ...)
-// {
-//     (void)level;
-//     va_list args;
-//     va_start(args, fmt);
-//     char buf[256];
-//     vsnprintf(buf, sizeof(buf), fmt, args);
-
-//     // Для ITM/SWO трассировки через SWD
-//     for(size_t i = 0; buf[i] != 0; i++) {
-//         ITM_SendChar(buf[i]);
-//     }
-
-//     va_end(args);
-// }
-
 void audio_task(void) {
-    // 1. Обработка выходящих данных из USB (динамик) в PPM
-    if (spk_data_size && !has_custom_value) {
+    // Вывод статистики FIFO раз в секунду
+    static uint32_t last_stats_time = 0;
+    if (board_millis() - last_stats_time > 1000) {
+        last_stats_time = board_millis();
+
+        // Вычисляем текущее заполнение FIFO
+        uint8_t fifo_usage;
+        if (ppm_fifo_head >= ppm_fifo_tail) {
+            fifo_usage = ppm_fifo_head - ppm_fifo_tail;
+        }
+        else {
+            fifo_usage = PPM_FIFO_SIZE - (ppm_fifo_tail - ppm_fifo_head);
+        }
+
+        printf("FIFO: push=%lu pop=%lu full=%lu empty=%lu fill=%u/%u\r\n",
+               fifo_push_count,
+               fifo_pop_count,
+               fifo_full_count,
+               fifo_empty_count,
+               fifo_usage,
+               PPM_FIFO_SIZE);
+    }
+
+    if (spk_data_size) {
+        bool fifo_full = false;
         if (current_resolution == 16) {
             int16_t *src   = (int16_t *)spk_buf;
             int16_t *limit = (int16_t *)spk_buf + spk_data_size / 2;
 
-            // Берем только один сэмпл за проход (стерео пара)
-            if (src < limit) {
-                // Объединяем левый и правый каналы в моно
-                int32_t left  = *src++;
-                int32_t right = *src++;
-                int16_t mono  = (int16_t)((left >> 1) + (right >> 1));
+            static uint32_t debug_counter = 0;
 
-                // Преобразуем аудиосэмпл в PPM-код и отправляем через лазер
+            while (src <= limit) {
+                int32_t  left      = *src++;
+                int32_t  right     = *src++;
+                int16_t  mono      = (int16_t)((left >> 1) + (right >> 1));
                 uint32_t ppm_value = audio_to_ppm(mono);
-                ppm_code_to_send   = ppm_value;
-                has_custom_value   = true;
 
-                // Сдвигаем оставшиеся данные в начало буфера
-                if (src < limit) {
-                    memmove(spk_buf, src, (uint8_t *)limit - (uint8_t *)src);
-                    spk_data_size = (uint8_t *)limit - (uint8_t *)src;
+                // Отладка каждые 50 сэмплов
+                if (++debug_counter % 50 == 0) {
+                    printf("PCM: left=%d, right=%d, mono=%d -> PPM=%u\n",
+                           (int)left,
+                           (int)right,
+                           (int)mono,
+                           ppm_value);
                 }
-                else {
-                    spk_data_size   = 0;
-                    spk_buffer_busy = false;
+                if (!ppm_fifo_push(ppm_value)) {
+                    fifo_full = true;
+                    break;
                 }
             }
+            int used = (uint8_t *)src - (uint8_t *)spk_buf;
+            if (used < spk_data_size) {
+                memmove(spk_buf, src, spk_data_size - used);
+            }
+            spk_data_size -= used;
         }
         else if (current_resolution == 24) {
-            int32_t *src   = spk_buf;
-            int32_t *limit = spk_buf + spk_data_size / 4;
-
-            // Берем только один сэмпл за проход (стерео пара)
-            if (src < limit) {
-                // Объединяем левый и правый каналы в моно
-                int32_t left  = *src++;
-                int32_t right = *src++;
-                int32_t mono  = (int32_t)((left >> 1) + (right >> 1));
-
-                // Преобразуем 24-битный аудиосэмпл в PPM-код
+            int32_t *src   = (int32_t *)spk_buf;
+            int32_t *limit = (int32_t *)spk_buf + spk_data_size / 4;
+            while (src <= limit) {
+                int32_t  left      = *src++;
+                int32_t  right     = *src++;
+                int32_t  mono      = (int32_t)((left >> 1) + (right >> 1));
                 uint32_t ppm_value = audio24_to_ppm(mono);
-                ppm_code_to_send   = ppm_value;
-                has_custom_value   = true;
-
-                // Сдвигаем оставшиеся данные в начало буфера
-                if (src < limit) {
-                    memmove(spk_buf, src, (uint8_t *)limit - (uint8_t *)src);
-                    spk_data_size = (uint8_t *)limit - (uint8_t *)src;
-                }
-                else {
-                    spk_data_size   = 0;
-                    spk_buffer_busy = false;
+                if (!ppm_fifo_push(ppm_value)) {
+                    fifo_full = true;
+                    break;
                 }
             }
+            int used = (uint8_t *)src - (uint8_t *)spk_buf;
+            if (used < spk_data_size) {
+                memmove(spk_buf, src, spk_data_size - used);
+            }
+            spk_data_size -= used;
+        }
+        // На этот код:
+        if (spk_data_size == 0) {
+            // Просто сбрасываем флаг busy
+            spk_buffer_busy = false;
+            printf("Буфер освобожден, прием возобновлен\r\n");
         }
     }
 
-    // 2. Обработка входящих данных из FIFO (от второго ядра) в USB (микрофон)
+    // 2. Обработка входящих данных из FIFO (от второго ядра) в USB (микрофон) — без изменений
     static uint32_t last_received_value = 0;
     static uint16_t mic_buffer_index    = 0;
 
-    // Проверяем доступность данных в FIFO
     if (multicore_fifo_rvalid()) {
-        // Получаем PPM-значение из FIFO
         uint32_t ppm_value  = multicore_fifo_pop_blocking();
-        last_received_value = ppm_value;    // Сохраняем значение для отладки
+        last_received_value = ppm_value;
 
         if (current_resolution == 16) {
-            // Преобразуем PPM обратно в 16-битное аудио
-            int16_t audio_sample = ppm_to_audio(ppm_value);
-
-            // Заполняем оба канала для стерео
-            int16_t *dst = (int16_t *)((uint8_t *)mic_buf + mic_buffer_index);
-            *dst++       = audio_sample;    // Левый канал
-            *dst++       = audio_sample;    // Правый канал
-            mic_buffer_index += 4;          // 2 сэмпла по 2 байта
-
-            // Когда буфер достаточно заполнен, отправляем данные
+            int16_t  audio_sample = ppm_to_audio(ppm_value);
+            int16_t *dst          = (int16_t *)((uint8_t *)mic_buf + mic_buffer_index);
+            *dst++                = audio_sample;
+            *dst++                = audio_sample;
+            mic_buffer_index += 4;
             if (mic_buffer_index >= 48) {
                 tud_audio_write((uint8_t *)mic_buf, mic_buffer_index);
                 mic_buffer_index = 0;
             }
         }
         else if (current_resolution == 24) {
-            // Преобразуем PPM обратно в 24-битное аудио
-            int32_t audio_sample = ppm_to_audio24(ppm_value);
-
-            // Заполняем оба канала для стерео
-            int32_t *dst = (int32_t *)((uint8_t *)mic_buf + mic_buffer_index);
-            *dst++       = audio_sample;    // Левый канал
-            *dst++       = audio_sample;    // Правый канал
-            mic_buffer_index += 8;          // 2 сэмпла по 4 байта
-
-            // Когда буфер достаточно заполнен, отправляем данные
+            int32_t  audio_sample = ppm_to_audio24(ppm_value);
+            int32_t *dst          = (int32_t *)((uint8_t *)mic_buf + mic_buffer_index);
+            *dst++                = audio_sample;
+            *dst++                = audio_sample;
+            mic_buffer_index += 8;
             if (mic_buffer_index >= 96) {
                 tud_audio_write((uint8_t *)mic_buf, mic_buffer_index);
                 mic_buffer_index = 0;
