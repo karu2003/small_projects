@@ -16,22 +16,22 @@ uint8_t  current_resolution;
 #define UART_TX_PIN 16    // GPIO16 - UART0 TX
 #define UART_RX_PIN 17    // GPIO17 - UART0 RX
 
-#define BUFFER_SIZE (CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 2)
+#define BUFFER_SIZE (CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ)
 
 // Структура для двойной буферизации динамика
 typedef struct {
-    uint32_t      ppm_buffer[BUFFER_SIZE / 4];    // Буфер готовых PPM значений
-    volatile int  size;                           // Количество PPM значений в буфере
-    volatile int  position;                       // Текущая позиция для чтения
-    volatile bool ready;                          // Буфер готов к использованию
+    uint32_t      ppm_buffer[BUFFER_SIZE];    // Буфер готовых PPM значений
+    volatile int  size;                       // Количество PPM значений в буфере
+    volatile int  position;                   // Текущая позиция для чтения
+    volatile bool ready;                      // Буфер готов к использованию
 } spk_ppm_buffer_t;
 
 // Структура для двойной буферизации микрофона
 typedef struct {
-    int32_t       pcm_buffer[BUFFER_SIZE / 4];    // Буфер для PCM данных
-    volatile int  size;                           // Размер данных в буфере
-    volatile int  position;                       // Текущая позиция для записи
-    volatile bool ready;                          // Буфер готов к отправке
+    int32_t       pcm_buffer[BUFFER_SIZE];    // Буфер для PCM данных
+    volatile int  size;                       // Размер данных в буфере
+    volatile int  position;                   // Текущая позиция для записи
+    volatile bool ready;                      // Буфер готов к отправке
 } mic_pcm_buffer_t;
 
 // Двойные буферы для динамика (USB -> PPM)
@@ -43,9 +43,6 @@ static volatile uint8_t current_spk_read_buffer  = 0;    // Буфер для ч
 static mic_pcm_buffer_t mic_buffers[2];
 static volatile uint8_t current_mic_write_buffer = 0;    // Буфер для записи из PPM
 static volatile uint8_t current_mic_read_buffer  = 0;    // Буфер для чтения в USB
-
-// Рабочий буфер для приема USB данных
-static int32_t usb_work_buffer[BUFFER_SIZE / 4];
 
 // Статистика
 static volatile uint32_t spk_packets_received  = 0;
@@ -112,8 +109,8 @@ int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master chan
 // Speaker data size received in the last frame
 // volatile int spk_data_size;
 // Resolution per format
-// const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
-//                                                                         CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
+const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
+                                                                        CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
 
 void led_blinking_task(void);
 void audio_task(void);
@@ -152,58 +149,23 @@ void init_pulse_generator(float freq) {
     pio_sm_set_enabled(pio, sm_gen, true);
 }
 
-// Преобразование 16-битного PCM в 10-битное значение для PPM
 uint32_t audio_to_ppm(int16_t audio_sample) {
     if (audio_sample >= 0) {
-        // [0, 32767] -> [511, 1023]
         return 511 + (uint32_t)((uint64_t)audio_sample * 512 / 32767);
     }
     else {
-        // [-32768, -1] -> [0, 510]
         return 511 - (uint32_t)((uint64_t)(-audio_sample - 1) * 511 / 32767) - 1;
     }
 }
 
-// Преобразование 24-битного PCM в 10-битное значение для PPM
-uint32_t audio24_to_ppm(int32_t audio_sample) {
-    // Убеждаемся, что это валидное 24-битное значение
-    audio_sample = (audio_sample << 8) >> 8;    // Расширение знака для 24-бит
-
-    if (audio_sample >= 0) {
-        // [0, 8388607] -> [511, 1023]
-        return 511 + (uint32_t)((uint64_t)audio_sample * 512 / 8388607);
+int16_t ppm_to_audio(uint32_t ppm_value) {
+    ppm_value &= 0x3FF;
+    if (ppm_value >= 511) {
+        return (int16_t)(((ppm_value - 511) * 32767) / 512);
     }
     else {
-        // [-8388608, -1] -> [0, 510]
-        return 511 - (uint32_t)((uint64_t)(-audio_sample - 1) * 511 / 8388607) - 1;
+        return (int16_t)(-32768 + ((ppm_value * 32767) / 510));
     }
-}
-
-// Преобразование 10-битного PPM обратно в 16-битное PCM
-int16_t ppm_to_audio(uint32_t ppm_value) {
-    // Ограничиваем диапазон
-    ppm_value &= 0x3FF;    // 0-1023
-
-    // Масштабирование от 10-бит (0-1023) к 16-бит (0-65535)
-    uint32_t unsigned_sample = (ppm_value * 65535 + 511) / 1023;
-
-    // Сдвиг обратно к знаковому диапазону
-    return (int16_t)((int32_t)unsigned_sample - 32768);
-}
-
-// Преобразование 10-битного PPM обратно в 24-битное PCM
-int32_t ppm_to_audio24(uint32_t ppm_value) {
-    // Ограничиваем диапазон
-    ppm_value &= 0x3FF;    // 0-1023
-
-    // Масштабирование от 10-бит (0-1023) к 24-бит (0-16777215)
-    uint32_t unsigned_sample = (ppm_value * 16777215 + 511) / 1023;
-
-    // Сдвиг обратно к знаковому диапазону
-    int32_t signed_sample = (int32_t)((int64_t)unsigned_sample - 8388608);
-
-    // Убеждаемся, что результат помещается в 24 бита
-    return (signed_sample << 8) >> 8;
 }
 
 void led_blinking_task(void) {
@@ -219,9 +181,8 @@ void led_blinking_task(void) {
     led_state = 1 - led_state;
 }
 
-// Инициализация двойной буферизации
 void init_double_buffering(void) {
-    // Инициализация буферов динамика
+
     for (int i = 0; i < 2; i++) {
         spk_buffers[i].size     = 0;
         spk_buffers[i].position = 0;
@@ -230,7 +191,6 @@ void init_double_buffering(void) {
     current_spk_write_buffer = 0;
     current_spk_read_buffer  = 0;
 
-    // Инициализация буферов микрофона
     for (int i = 0; i < 2; i++) {
         mic_buffers[i].size     = 0;
         mic_buffers[i].position = 0;
@@ -241,6 +201,50 @@ void init_double_buffering(void) {
 
     printf("Double buffering initialized (no FIFO)\r\n");
 }
+
+// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting)
+// {
+//   (void)rhport;
+//   (void)func_id;
+//   (void)ep_out;
+//   (void)cur_alt_setting;
+
+//   spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+//   return true;
+// }
+
+bool tud_audio_rx_done_post_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
+    (void)rhport;
+    (void)func_id;
+    (void)ep_out;
+    (void)cur_alt_setting;
+
+    // Данные уже прочитаны TinyUSB автоматически!
+    // Просто устанавливаем флаг, что пришли новые данные
+    spk_packets_received++;
+
+    // Для отладки
+    if (spk_packets_received % 1000 == 0) {
+        printf("USB: Получены данные, %d байт\r\n", n_bytes_received);
+    }
+
+    return true;
+}
+
+// bool tud_audio_rx_done_post_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting)
+// {
+//   (void)rhport;
+//   (void)n_bytes_received;
+//   (void)func_id;
+//   (void)ep_out;
+//   (void)cur_alt_setting;
+
+//   fifo_count = tud_audio_available();
+//   // Same averaging method used in UAC2 class
+//   fifo_count_avg = (uint32_t)(((uint64_t)fifo_count_avg * 63  + ((uint32_t)fifo_count << 16)) >> 6);
+
+//   return true;
+// }
 
 // Таск обработки динамика (USB -> PPM)
 void spk_task(void) {
@@ -253,35 +257,27 @@ void spk_task(void) {
                                           CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_RX *
                                           CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX);
 
-        int bytes_read = tud_audio_read(usb_work_buffer, packet_size);
+        // Читаем данные напрямую в буфер динамика, используя его как временное хранилище PCM
+        int16_t *pcm_data   = (int16_t *)write_buf->ppm_buffer;    // Временно используем для PCM
+        int      bytes_read = tud_audio_read((uint8_t *)pcm_data, packet_size);
 
         if (bytes_read > 0) {
-            // Преобразуем PCM в PPM значения
-            int ppm_count = 0;
+            // Преобразуем PCM в PPM значения на месте
+            int ppm_count   = 0;
+            int pcm_samples = bytes_read / 2;    // Количество 16-битных семплов
 
-            if (current_resolution == 16) {
-                int16_t *src   = (int16_t *)usb_work_buffer;
-                int16_t *limit = (int16_t *)usb_work_buffer + bytes_read / 2;
+            // Преобразуем стерео в моно и затем в PPM
+            for (int i = 0; i < pcm_samples - 1; i += 2) {
+                int32_t left  = pcm_data[i];
+                int32_t right = pcm_data[i + 1];
+                int16_t mono  = (int16_t)((left >> 1) + (right >> 1));
 
-                while (src + 1 < limit && ppm_count < (BUFFER_SIZE / 4)) {
-                    int32_t left  = *src++;
-                    int32_t right = *src++;
-                    int16_t mono  = (int16_t)((left >> 1) + (right >> 1));
+                // Сохраняем PPM код в том же буфере, смещая к началу
+                write_buf->ppm_buffer[ppm_count++] = audio_to_ppm(mono);
 
-                    write_buf->ppm_buffer[ppm_count++] = audio_to_ppm(mono);
-                }
-            }
-            else if (current_resolution == 24) {
-                int32_t *src   = (int32_t *)usb_work_buffer;
-                int32_t *limit = (int32_t *)usb_work_buffer + bytes_read / 4;
-
-                while (src + 1 < limit && ppm_count < (BUFFER_SIZE / 4)) {
-                    int32_t left  = *src++;
-                    int32_t right = *src++;
-                    int32_t mono  = (int32_t)((left >> 1) + (right >> 1));
-
-                    write_buf->ppm_buffer[ppm_count++] = audio24_to_ppm(mono);
-                }
+                // Предотвращаем выход за границы буфера
+                if (ppm_count >= BUFFER_SIZE / 4)
+                    break;
             }
 
             if (ppm_count > 0) {
@@ -295,8 +291,9 @@ void spk_task(void) {
 
                 // Отладка каждые 1000 пакетов
                 if (spk_packets_received % 1000 == 0) {
-                    printf("SPK: Packet #%lu, PPM samples=%d\r\n",
+                    printf("SPK: Packet #%lu, PCM=%d bytes, PPM=%d samples\r\n",
                            spk_packets_received,
+                           bytes_read,
                            ppm_count);
                 }
             }
@@ -304,57 +301,30 @@ void spk_task(void) {
     }
 }
 
-// for (uint8_t cnt = 0; cnt < 2; cnt++) {
-//     tud_audio_write_support_ff(cnt, i2s_dummy_buffer[cnt], AUDIO_SAMPLE_RATE / 1000 * CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_TX * CFG_TUD_AUDIO_FUNC_1_CHANNEL_PER_FIFO_TX);
-// }
-// tud_audio_write(i2s_dummy_buffer, AUDIO_SAMPLE_RATE/1000 * CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_TX * CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX);
-
-// Таск обработки микрофона (PPM -> USB)
+// Упрощаем mic_task, убирая ветку для 24-бит
 void mic_task(void) {
     // 1. Прием данных из межъядерного FIFO
     if (multicore_fifo_rvalid()) {
         uint32_t          ppm_value = multicore_fifo_pop_blocking();
         mic_pcm_buffer_t *write_buf = &mic_buffers[current_mic_write_buffer];
 
-        if (current_resolution == 16) {
-            int16_t  audio_sample = ppm_to_audio(ppm_value);
-            int16_t *dst          = (int16_t *)((uint8_t *)write_buf->pcm_buffer + write_buf->position);
+        int16_t  audio_sample = ppm_to_audio(ppm_value);
+        int16_t *dst          = (int16_t *)((uint8_t *)write_buf->pcm_buffer + write_buf->position);
 
-            // Стерео: дублируем моно сигнал
-            *dst++ = audio_sample;       // Левый канал
-            *dst++ = audio_sample;       // Правый канал
-            write_buf->position += 4;    // 2 сэмпла по 2 байта
-            mic_samples_received++;
+        // Стерео: дублируем моно сигнал
+        *dst++ = audio_sample;       // Левый канал
+        *dst++ = audio_sample;       // Правый канал
+        write_buf->position += 4;    // 2 сэмпла по 2 байта
+        mic_samples_received++;
 
-            // Если буфер заполнен, помечаем его готовым
-            if (write_buf->position >= 96) {    // ~24 стерео сэмпла
-                write_buf->size     = write_buf->position;
-                write_buf->ready    = true;
-                write_buf->position = 0;
+        // Если буфер заполнен, помечаем его готовым
+        if (write_buf->position >= 96) {    // ~24 стерео сэмпла
+            write_buf->size     = write_buf->position;
+            write_buf->ready    = true;
+            write_buf->position = 0;
 
-                // Переключаемся на следующий буфер
-                current_mic_write_buffer = (current_mic_write_buffer + 1) % 2;
-            }
-        }
-        else if (current_resolution == 24) {
-            int32_t  audio_sample = ppm_to_audio24(ppm_value);
-            int32_t *dst          = (int32_t *)((uint8_t *)write_buf->pcm_buffer + write_buf->position);
-
-            // Стерео: дублируем моно сигнал
-            *dst++ = audio_sample;       // Левый канал
-            *dst++ = audio_sample;       // Правый канал
-            write_buf->position += 8;    // 2 сэмпла по 4 байта
-            mic_samples_received++;
-
-            // Если буфер заполнен, помечаем его готовым
-            if (write_buf->position >= 192) {    // ~24 стерео сэмпла
-                write_buf->size     = write_buf->position;
-                write_buf->ready    = true;
-                write_buf->position = 0;
-
-                // Переключаемся на следующий буфер
-                current_mic_write_buffer = (current_mic_write_buffer + 1) % 2;
-            }
+            // Переключаемся на следующий буфер
+            current_mic_write_buffer = (current_mic_write_buffer + 1) % 2;
         }
     }
 
@@ -499,7 +469,19 @@ void second_core_main() {
 
     timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
 
-    printf("Audio system initialized with double buffering (no FIFO)\r\n");
+    // На эти (правильные названия и формат):
+    printf("Test: PCM max (32767) -> PPM=%u\n", audio_to_ppm(32767));
+    printf("Test: PCM half max (16384) -> PPM=%u\n", audio_to_ppm(16384));
+    printf("Test: PCM zero (0) -> PPM=%u\n", audio_to_ppm(0));
+    printf("Test: PCM half min (-16384) -> PPM=%u\n", audio_to_ppm(-16384));
+    printf("Test: PCM min (-32767) -> PPM=%u\n", audio_to_ppm(-32767));
+
+    printf("Test: PPM min (0) -> PCM=%d\n", ppm_to_audio(0));
+    printf("Test: PPM mid (511) -> PCM=%d\n", ppm_to_audio(511));
+    printf("Test: PPM max (1023) -> PCM=%d\n", ppm_to_audio(1023));
+
+    // Устанавливаем разрешение принудительно на 16 бит
+    current_resolution = 16;
 
     // Main operation loop on Core1
     while (1) {
@@ -508,3 +490,297 @@ void second_core_main() {
         led_blinking_task();
     }
 }
+
+//--------------------------------------------------------------------+
+// Device callbacks
+//--------------------------------------------------------------------+
+
+// Invoked when device is mounted
+void tud_mount_cb(void) {
+    blink_interval_ms = BLINK_MOUNTED;
+}
+
+// Invoked when device is unmounted
+void tud_umount_cb(void) {
+    blink_interval_ms = BLINK_NOT_MOUNTED;
+}
+
+// Invoked when usb bus is suspended
+// remote_wakeup_en : if host allow us  to perform remote wakeup
+// Within 7ms, device must draw an average of current less than 2.5 mA from bus
+void tud_suspend_cb(bool remote_wakeup_en) {
+    (void)remote_wakeup_en;
+    blink_interval_ms = BLINK_SUSPENDED;
+}
+
+// Invoked when usb bus is resumed
+void tud_resume_cb(void) {
+    blink_interval_ms = tud_mounted() ? BLINK_MOUNTED : BLINK_NOT_MOUNTED;
+}
+
+// Helper for clock get requests
+static bool tud_audio_clock_get_request(uint8_t rhport, audio_control_request_t const *request) {
+    TU_ASSERT(request->bEntityID == UAC2_ENTITY_CLOCK);
+
+    if (request->bControlSelector == AUDIO_CS_CTRL_SAM_FREQ) {
+        if (request->bRequest == AUDIO_CS_REQ_CUR) {
+            TU_LOG1("Clock get current freq %" PRIu32 "\r\n", current_sample_rate);
+
+            audio_control_cur_4_t curf = {(int32_t)tu_htole32(current_sample_rate)};
+            return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &curf, sizeof(curf));
+        }
+        else if (request->bRequest == AUDIO_CS_REQ_RANGE) {
+            audio_control_range_4_n_t(N_SAMPLE_RATES) rangef =
+                {
+                    .wNumSubRanges = tu_htole16(N_SAMPLE_RATES)};
+            TU_LOG1("Clock get %d freq ranges\r\n", N_SAMPLE_RATES);
+            for (uint8_t i = 0; i < N_SAMPLE_RATES; i++) {
+                rangef.subrange[i].bMin = (int32_t)sample_rates[i];
+                rangef.subrange[i].bMax = (int32_t)sample_rates[i];
+                rangef.subrange[i].bRes = 0;
+                TU_LOG1("Range %d (%d, %d, %d)\r\n", i, (int)rangef.subrange[i].bMin, (int)rangef.subrange[i].bMax, (int)rangef.subrange[i].bRes);
+            }
+
+            return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &rangef, sizeof(rangef));
+        }
+    }
+    else if (request->bControlSelector == AUDIO_CS_CTRL_CLK_VALID &&
+             request->bRequest == AUDIO_CS_REQ_CUR) {
+        audio_control_cur_1_t cur_valid = {.bCur = 1};
+        TU_LOG1("Clock get is valid %u\r\n", cur_valid.bCur);
+        return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &cur_valid, sizeof(cur_valid));
+    }
+    TU_LOG1("Clock get request not supported, entity = %u, selector = %u, request = %u\r\n",
+            request->bEntityID,
+            request->bControlSelector,
+            request->bRequest);
+    return false;
+}
+
+// Helper for clock set requests
+static bool tud_audio_clock_set_request(uint8_t rhport, audio_control_request_t const *request, uint8_t const *buf) {
+    (void)rhport;
+
+    TU_ASSERT(request->bEntityID == UAC2_ENTITY_CLOCK);
+    TU_VERIFY(request->bRequest == AUDIO_CS_REQ_CUR);
+
+    if (request->bControlSelector == AUDIO_CS_CTRL_SAM_FREQ) {
+        TU_VERIFY(request->wLength == sizeof(audio_control_cur_4_t));
+
+        current_sample_rate = (uint32_t)((audio_control_cur_4_t const *)buf)->bCur;
+
+        TU_LOG1("Clock set current freq: %" PRIu32 "\r\n", current_sample_rate);
+
+        return true;
+    }
+    else {
+        TU_LOG1("Clock set request not supported, entity = %u, selector = %u, request = %u\r\n",
+                request->bEntityID,
+                request->bControlSelector,
+                request->bRequest);
+        return false;
+    }
+}
+
+// Helper for feature unit get requests
+static bool tud_audio_feature_unit_get_request(uint8_t rhport, audio_control_request_t const *request) {
+    TU_ASSERT(request->bEntityID == UAC2_ENTITY_SPK_FEATURE_UNIT);
+
+    if (request->bControlSelector == AUDIO_FU_CTRL_MUTE && request->bRequest == AUDIO_CS_REQ_CUR) {
+        audio_control_cur_1_t mute1 = {.bCur = mute[request->bChannelNumber]};
+        TU_LOG1("Get channel %u mute %d\r\n", request->bChannelNumber, mute1.bCur);
+        return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &mute1, sizeof(mute1));
+    }
+    else if (request->bControlSelector == AUDIO_FU_CTRL_VOLUME) {
+        if (request->bRequest == AUDIO_CS_REQ_RANGE) {
+            audio_control_range_2_n_t(1) range_vol = {
+                .wNumSubRanges = tu_htole16(1),
+                .subrange[0]   = {.bMin = tu_htole16(-VOLUME_CTRL_50_DB), tu_htole16(VOLUME_CTRL_0_DB), tu_htole16(256)}};
+            TU_LOG1("Get channel %u volume range (%d, %d, %u) dB\r\n", request->bChannelNumber, range_vol.subrange[0].bMin / 256, range_vol.subrange[0].bMax / 256, range_vol.subrange[0].bRes / 256);
+            return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &range_vol, sizeof(range_vol));
+        }
+        else if (request->bRequest == AUDIO_CS_REQ_CUR) {
+            audio_control_cur_2_t cur_vol = {.bCur = tu_htole16(volume[request->bChannelNumber])};
+            TU_LOG1("Get channel %u volume %d dB\r\n", request->bChannelNumber, cur_vol.bCur / 256);
+            return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &cur_vol, sizeof(cur_vol));
+        }
+    }
+    TU_LOG1("Feature unit get request not supported, entity = %u, selector = %u, request = %u\r\n",
+            request->bEntityID,
+            request->bControlSelector,
+            request->bRequest);
+
+    return false;
+}
+
+// Helper for feature unit set requests
+static bool tud_audio_feature_unit_set_request(uint8_t rhport, audio_control_request_t const *request, uint8_t const *buf) {
+    (void)rhport;
+
+    TU_ASSERT(request->bEntityID == UAC2_ENTITY_SPK_FEATURE_UNIT);
+    TU_VERIFY(request->bRequest == AUDIO_CS_REQ_CUR);
+
+    if (request->bControlSelector == AUDIO_FU_CTRL_MUTE) {
+        TU_VERIFY(request->wLength == sizeof(audio_control_cur_1_t));
+
+        mute[request->bChannelNumber] = ((audio_control_cur_1_t const *)buf)->bCur;
+
+        TU_LOG1("Set channel %d Mute: %d\r\n", request->bChannelNumber, mute[request->bChannelNumber]);
+
+        return true;
+    }
+    else if (request->bControlSelector == AUDIO_FU_CTRL_VOLUME) {
+        TU_VERIFY(request->wLength == sizeof(audio_control_cur_2_t));
+
+        volume[request->bChannelNumber] = ((audio_control_cur_2_t const *)buf)->bCur;
+
+        TU_LOG1("Set channel %d volume: %d dB\r\n", request->bChannelNumber, volume[request->bChannelNumber] / 256);
+
+        return true;
+    }
+    else {
+        TU_LOG1("Feature unit set request not supported, entity = %u, selector = %u, request = %u\r\n",
+                request->bEntityID,
+                request->bControlSelector,
+                request->bRequest);
+        return false;
+    }
+}
+
+//--------------------------------------------------------------------+
+// Application Callback API Implementations
+//--------------------------------------------------------------------+
+
+// Invoked when audio class specific get request received for an entity
+bool tud_audio_get_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p_request) {
+    audio_control_request_t const *request = (audio_control_request_t const *)p_request;
+
+    if (request->bEntityID == UAC2_ENTITY_CLOCK)
+        return tud_audio_clock_get_request(rhport, request);
+    if (request->bEntityID == UAC2_ENTITY_SPK_FEATURE_UNIT)
+        return tud_audio_feature_unit_get_request(rhport, request);
+    else {
+        TU_LOG1("Get request not handled, entity = %d, selector = %d, request = %d\r\n",
+                request->bEntityID,
+                request->bControlSelector,
+                request->bRequest);
+    }
+    return false;
+}
+
+// Invoked when audio class specific set request received for an entity
+bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p_request, uint8_t *buf) {
+    audio_control_request_t const *request = (audio_control_request_t const *)p_request;
+
+    if (request->bEntityID == UAC2_ENTITY_SPK_FEATURE_UNIT)
+        return tud_audio_feature_unit_set_request(rhport, request, buf);
+    if (request->bEntityID == UAC2_ENTITY_CLOCK)
+        return tud_audio_clock_set_request(rhport, request, buf);
+    TU_LOG1("Set request not handled, entity = %d, selector = %d, request = %d\r\n",
+            request->bEntityID,
+            request->bControlSelector,
+            request->bRequest);
+
+    return false;
+}
+
+bool tud_audio_set_itf_close_EP_cb(uint8_t rhport, tusb_control_request_t const *p_request) {
+    (void)rhport;
+
+    uint8_t const itf = tu_u16_low(tu_le16toh(p_request->wIndex));
+    uint8_t const alt = tu_u16_low(tu_le16toh(p_request->wValue));
+
+    if (ITF_NUM_AUDIO_STREAMING_SPK == itf && alt == 0)
+        blink_interval_ms = BLINK_MOUNTED;
+
+    return true;
+}
+
+bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_request) {
+    (void)rhport;
+    uint8_t const itf = tu_u16_low(tu_le16toh(p_request->wIndex));
+    uint8_t const alt = tu_u16_low(tu_le16toh(p_request->wValue));
+
+    printf("USB: Установка интерфейса %d, alt %d\r\n", itf, alt);
+
+    // Обновляем индикацию режима работы
+    if (ITF_NUM_AUDIO_STREAMING_SPK == itf) {
+        if (alt != 0) {
+            blink_interval_ms = BLINK_STREAMING;    // Потоковый режим
+            printf("USB: Включен потоковый режим аудио!\r\n");
+        }
+        else {
+            blink_interval_ms = BLINK_MOUNTED;    // Нет потока данных
+            printf("USB: Отключен потоковый режим аудио\r\n");
+        }
+    }
+
+    // Сбрасываем состояние всех буферов динамика
+    for (int i = 0; i < 2; i++) {
+        spk_buffers[i].size     = 0;
+        spk_buffers[i].position = 0;
+        spk_buffers[i].ready    = false;
+    }
+    current_spk_write_buffer = 0;
+    current_spk_read_buffer  = 0;
+
+    // Устанавливаем разрешение и частоту дискретизации
+    if (alt != 0) {
+        current_resolution = resolutions_per_format[alt - 1];
+        audio_frame_ticks  = calculate_audio_frame_ticks();
+
+        printf("USB: Установлено разрешение %d бит, audio_frame_ticks=%lu\r\n",
+               current_resolution,
+               audio_frame_ticks);
+
+        // Перенастраиваем таймер на новую частоту
+        timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
+    }
+
+    return true;
+}
+
+// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
+//     (void)rhport;
+//     (void)func_id;
+//     (void)ep_out;
+//     (void)cur_alt_setting;
+
+//     if (spk_buffer_busy) {
+//         return false;
+//     }
+
+//     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+//     if (spk_data_size > 0) {
+//         spk_buffer_busy = true;
+//     }
+
+//     return true;
+// }
+
+// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
+//     (void)rhport;
+//     (void)func_id;
+//     (void)cur_alt_setting;
+
+//     // Если буфер занят, отказываемся принимать новые данные
+//     if (spk_buffer_busy) {
+//         // Сообщаем об этом для отладки
+//         static uint32_t last_busy_log = 0;
+//         if (board_millis() - last_busy_log > 50) {
+//             last_busy_log = board_millis();
+//             printf("USB: Device busy, NAK sent\r\n");
+//         }
+
+//         // Просим TinyUSB отправить NAK пакет
+//         // tud_edpt_stall(ep_out);
+//         return false;
+//     }
+
+//     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+//     if (spk_data_size > 0) {
+//         spk_buffer_busy = true;
+//     }
+
+//     return true;
+// }
