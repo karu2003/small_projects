@@ -1,67 +1,21 @@
 #include "common.h"
 #include "hardware/uart.h"
+#include "pico/sem.h"
 #include "usb_descriptors.h"
 #include <bsp/board_api.h>
+#include <limits.h>
 #include <string.h>
 
 // List of supported sample rates
 const uint32_t sample_rates[] = {44100, AUDIO_SAMPLE_RATE};
 
 uint32_t current_sample_rate = AUDIO_SAMPLE_RATE;
-uint8_t  current_resolution;
 
 #define UART_ID   uart0
 #define BAUD_RATE 115200
 
 #define UART_TX_PIN 16    // GPIO16 - UART0 TX
 #define UART_RX_PIN 17    // GPIO17 - UART0 RX
-
-#define BUFFER_SIZE (CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ)
-
-// Структура для двойной буферизации динамика
-typedef struct {
-    uint32_t      ppm_buffer[BUFFER_SIZE];    // Буфер готовых PPM значений
-    volatile int  size;                       // Количество PPM значений в буфере
-    volatile int  position;                   // Текущая позиция для чтения
-    volatile bool ready;                      // Буфер готов к использованию
-} spk_ppm_buffer_t;
-
-// Структура для двойной буферизации микрофона
-typedef struct {
-    int32_t       pcm_buffer[BUFFER_SIZE];    // Буфер для PCM данных
-    volatile int  size;                       // Размер данных в буфере
-    volatile int  position;                   // Текущая позиция для записи
-    volatile bool ready;                      // Буфер готов к отправке
-} mic_pcm_buffer_t;
-
-// Двойные буферы для динамика (USB -> PPM)
-static spk_ppm_buffer_t spk_buffers[2];
-static volatile uint8_t current_spk_write_buffer = 0;    // Буфер для подготовки PPM
-static volatile uint8_t current_spk_read_buffer  = 0;    // Буфер для чтения в timer
-
-// Двойные буферы для микрофона (PPM -> USB)
-static mic_pcm_buffer_t mic_buffers[2];
-static volatile uint8_t current_mic_write_buffer = 0;    // Буфер для записи из PPM
-static volatile uint8_t current_mic_read_buffer  = 0;    // Буфер для чтения в USB
-
-// Статистика
-static volatile uint32_t spk_packets_received  = 0;
-static volatile uint32_t spk_samples_processed = 0;
-static volatile uint32_t mic_samples_received  = 0;
-static volatile uint32_t mic_packets_sent      = 0;
-static volatile uint32_t timer_irq_count       = 0;
-
-void setup_uart() {
-    // Инициализация UART0
-    uart_init(UART_ID, BAUD_RATE);
-
-    // Установка функций на GPIO
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-
-    // Перенаправление стандартного вывода на UART
-    stdio_uart_init();
-}
 
 #define N_SAMPLE_RATES TU_ARRAY_SIZE(sample_rates)
 
@@ -103,17 +57,35 @@ int8_t  mute[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];      // +1 for master chan
 int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master channel 0
 
 // Buffer for microphone data
-// int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 2];
+int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
 // Buffer for speaker data
-// int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 2];
+int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
 // Speaker data size received in the last frame
-// volatile int spk_data_size;
+uint16_t spk_data_size;
 // Resolution per format
 const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
                                                                         CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
+// Current resolution, update on format change
+uint8_t current_resolution;
+uint8_t has_custom_value = false;
+
+// Двойные буферы для динамика (USB -> PPM)
+static spk_ppm_buffer_t spk_buffers[2];
+static volatile uint8_t current_spk_write_buffer = 0;    // Буфер для подготовки PPM
+static volatile uint8_t current_spk_read_buffer  = 0;    // Буфер для чтения в timer
+
+// // Двойные буферы для микрофона (PPM -> USB)
+// static mic_pcm_buffer_t mic_buffers[2];
+// static volatile uint8_t current_mic_write_buffer = 0;    // Буфер для записи из PPM
+// static volatile uint8_t current_mic_read_buffer  = 0;    // Буфер для чтения в USB
+
+static volatile uint32_t timer_irq_count      = 0;
+static volatile uint32_t spk_buf_pos          = 0;
+static volatile bool     buffer_being_updated = false;
 
 void led_blinking_task(void);
-void audio_task(void);
+void spk_task(void);
+void mic_task(void);
 void audio_control_task(void);
 
 static PIO  pio = pio1;    // Use another PIO to avoid conflicts
@@ -123,20 +95,64 @@ volatile uint32_t ppm_code_to_send = 0;
 
 uint32_t audio_frame_ticks;
 
-void generate_pulse(uint32_t pause_width, bool verbose) {
+void setup_uart() {
+    uart_init(UART_ID, BAUD_RATE);
+
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    stdio_uart_init();
+}
+
+void init_double_buffering(void) {
+    for (int i = 0; i < 2; i++) {
+        spk_buffers[i].size     = 0;
+        spk_buffers[i].position = 0;
+        spk_buffers[i].ready    = false;
+    }
+    current_spk_write_buffer = 0;
+    current_spk_read_buffer  = 0;
+
+    // for (int i = 0; i < 2; i++) {
+    //     mic_buffers[i].size     = 0;
+    //     mic_buffers[i].position = 0;
+    //     mic_buffers[i].ready    = false;
+    // }
+    // current_mic_write_buffer = 0;
+    // current_mic_read_buffer  = 0;
+}
+
+void init_core_shared_buffer(void) {
+    // Инициализация счетчиков и индексов
+    shared_ppm_data.write_index = 0;
+    shared_ppm_data.read_index  = 0;
+    shared_ppm_data.size[0]     = 0;
+    shared_ppm_data.size[1]     = 0;
+
+    // Инициализация семафоров
+    sem_init(&shared_ppm_data.sem_empty, 2, 2);    // Два пустых буфера
+    sem_init(&shared_ppm_data.sem_full, 0, 2);     // Нет заполненных буферов
+
+    // Установим флаг инициализации
+    sem_initialized = true;
+}
+
+void generate_pulse(uint32_t pause_width) {
     pio_sm_put_blocking(pio, sm_gen, pause_width);
 }
 
 uint32_t calculate_audio_frame_ticks() {
-    // return clock_get_hz(clk_sys) / current_sample_rate;
     return 1000000 / current_sample_rate;
 }
 
 // Initialize PIO for pulse generator
 void init_pulse_generator(float freq) {
-    sm_gen               = pio_claim_unused_sm(pio, true);
-    uint          offset = pio_add_program(pio, &pulse_generator_program);
-    pio_sm_config c      = pulse_generator_program_get_default_config(offset);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+    sm_gen      = pio_claim_unused_sm(pio, true);
+    uint offset = pio_add_program(pio, &pulse_generator_program);
+#pragma GCC diagnostic pop
+    pio_sm_config c = pulse_generator_program_get_default_config(offset);
 
     // Setup pins for PIO
     sm_config_set_set_pins(&c, PULSE_GEN_PIN, 1);
@@ -150,298 +166,48 @@ void init_pulse_generator(float freq) {
 }
 
 uint32_t audio_to_ppm(int16_t audio_sample) {
-    if (audio_sample >= 0) {
-        return 511 + (uint32_t)((uint64_t)audio_sample * 512 / 32767);
-    }
-    else {
-        return 511 - (uint32_t)((uint64_t)(-audio_sample - 1) * 511 / 32767) - 1;
-    }
+    return (uint32_t)(((int64_t)audio_sample + 32768) * 1024 / 65536);
 }
 
 int16_t ppm_to_audio(uint32_t ppm_value) {
     ppm_value &= 0x3FF;
-    if (ppm_value >= 511) {
-        return (int16_t)(((ppm_value - 511) * 32767) / 512);
-    }
-    else {
-        return (int16_t)(-32768 + ((ppm_value * 32767) / 510));
-    }
+    return (int16_t)(((int64_t)ppm_value * 65536 / 1024) - 32768);
 }
-
-void led_blinking_task(void) {
-    static uint32_t start_ms  = 0;
-    static bool     led_state = false;
-
-    // Blink every interval ms
-    if (board_millis() - start_ms < blink_interval_ms)
-        return;
-    start_ms += blink_interval_ms;
-
-    board_led_write(led_state);
-    led_state = 1 - led_state;
-}
-
-void init_double_buffering(void) {
-
-    for (int i = 0; i < 2; i++) {
-        spk_buffers[i].size     = 0;
-        spk_buffers[i].position = 0;
-        spk_buffers[i].ready    = false;
-    }
-    current_spk_write_buffer = 0;
-    current_spk_read_buffer  = 0;
-
-    for (int i = 0; i < 2; i++) {
-        mic_buffers[i].size     = 0;
-        mic_buffers[i].position = 0;
-        mic_buffers[i].ready    = false;
-    }
-    current_mic_write_buffer = 0;
-    current_mic_read_buffer  = 0;
-
-    printf("Double buffering initialized (no FIFO)\r\n");
-}
-
-// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting)
-// {
-//   (void)rhport;
-//   (void)func_id;
-//   (void)ep_out;
-//   (void)cur_alt_setting;
-
-//   spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
-//   return true;
-// }
-
-bool tud_audio_rx_done_post_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
-    (void)rhport;
-    (void)func_id;
-    (void)ep_out;
-    (void)cur_alt_setting;
-
-    // Данные уже прочитаны TinyUSB автоматически!
-    // Просто устанавливаем флаг, что пришли новые данные
-    spk_packets_received++;
-
-    // Для отладки
-    if (spk_packets_received % 1000 == 0) {
-        printf("USB: Получены данные, %d байт\r\n", n_bytes_received);
-    }
-
-    return true;
-}
-
-// bool tud_audio_rx_done_post_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting)
-// {
-//   (void)rhport;
-//   (void)n_bytes_received;
-//   (void)func_id;
-//   (void)ep_out;
-//   (void)cur_alt_setting;
-
-//   fifo_count = tud_audio_available();
-//   // Same averaging method used in UAC2 class
-//   fifo_count_avg = (uint32_t)(((uint64_t)fifo_count_avg * 63  + ((uint32_t)fifo_count << 16)) >> 6);
-
-//   return true;
-// }
-
-// Таск обработки динамика (USB -> PPM)
-void spk_task(void) {
-    // 1. Прием данных из USB и подготовка PPM
-    spk_ppm_buffer_t *write_buf = &spk_buffers[current_spk_write_buffer];
-
-    if (!write_buf->ready) {
-        // Буфер PPM свободен, можем готовить новые данные
-        uint16_t packet_size = (uint16_t)(current_sample_rate / 1000 *
-                                          CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_RX *
-                                          CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX);
-
-        // Читаем данные напрямую в буфер динамика, используя его как временное хранилище PCM
-        int16_t *pcm_data   = (int16_t *)write_buf->ppm_buffer;    // Временно используем для PCM
-        int      bytes_read = tud_audio_read((uint8_t *)pcm_data, packet_size);
-
-        if (bytes_read > 0) {
-            // Преобразуем PCM в PPM значения на месте
-            int ppm_count   = 0;
-            int pcm_samples = bytes_read / 2;    // Количество 16-битных семплов
-
-            // Преобразуем стерео в моно и затем в PPM
-            for (int i = 0; i < pcm_samples - 1; i += 2) {
-                int32_t left  = pcm_data[i];
-                int32_t right = pcm_data[i + 1];
-                int16_t mono  = (int16_t)((left >> 1) + (right >> 1));
-
-                // Сохраняем PPM код в том же буфере, смещая к началу
-                write_buf->ppm_buffer[ppm_count++] = audio_to_ppm(mono);
-
-                // Предотвращаем выход за границы буфера
-                if (ppm_count >= BUFFER_SIZE / 4)
-                    break;
-            }
-
-            if (ppm_count > 0) {
-                write_buf->size  = ppm_count;
-                write_buf->ready = true;
-
-                // Переключаемся на следующий буфер для записи
-                current_spk_write_buffer = (current_spk_write_buffer + 1) % 2;
-                spk_packets_received++;
-                spk_samples_processed += ppm_count;
-
-                // Отладка каждые 1000 пакетов
-                if (spk_packets_received % 1000 == 0) {
-                    printf("SPK: Packet #%lu, PCM=%d bytes, PPM=%d samples\r\n",
-                           spk_packets_received,
-                           bytes_read,
-                           ppm_count);
-                }
-            }
-        }
-    }
-}
-
-// Упрощаем mic_task, убирая ветку для 24-бит
-void mic_task(void) {
-    // 1. Прием данных из межъядерного FIFO
-    if (multicore_fifo_rvalid()) {
-        uint32_t          ppm_value = multicore_fifo_pop_blocking();
-        mic_pcm_buffer_t *write_buf = &mic_buffers[current_mic_write_buffer];
-
-        int16_t  audio_sample = ppm_to_audio(ppm_value);
-        int16_t *dst          = (int16_t *)((uint8_t *)write_buf->pcm_buffer + write_buf->position);
-
-        // Стерео: дублируем моно сигнал
-        *dst++ = audio_sample;       // Левый канал
-        *dst++ = audio_sample;       // Правый канал
-        write_buf->position += 4;    // 2 сэмпла по 2 байта
-        mic_samples_received++;
-
-        // Если буфер заполнен, помечаем его готовым
-        if (write_buf->position >= 96) {    // ~24 стерео сэмпла
-            write_buf->size     = write_buf->position;
-            write_buf->ready    = true;
-            write_buf->position = 0;
-
-            // Переключаемся на следующий буфер
-            current_mic_write_buffer = (current_mic_write_buffer + 1) % 2;
-        }
-    }
-
-    // 2. Отправка готовых буферов в USB
-    mic_pcm_buffer_t *read_buf = &mic_buffers[current_mic_read_buffer];
-
-    if (read_buf->ready) {
-        // Отправляем данные в USB
-        if (tud_audio_write((uint8_t *)read_buf->pcm_buffer, read_buf->size)) {
-            read_buf->ready    = false;
-            read_buf->size     = 0;
-            read_buf->position = 0;
-            mic_packets_sent++;
-
-            // Переключаемся на следующий буфер для чтения
-            current_mic_read_buffer = (current_mic_read_buffer + 1) % 2;
-
-            // Отладка каждые 500 пакетов
-            if (mic_packets_sent % 500 == 0) {
-                printf("MIC: Sent packet #%lu\r\n", mic_packets_sent);
-            }
-        }
-    }
-}
-
-// Минимальный timer0_irq_handler - только выборка и отправка
 void timer0_irq_handler() {
     if (timer_hw->intr & (1u << 0)) {
         timer_hw->intr = 1u << 0;
-        timer_irq_count++;
 
-        uint32_t ppm_value = MIN_INTERVAL_CYCLES;    // По умолчанию тишина
+        uint32_t ppm_value;
 
-        // Быстрое чтение из текущего буфера
-        spk_ppm_buffer_t *read_buf = &spk_buffers[current_spk_read_buffer];
+        if (spk_buffers[current_spk_read_buffer].ready &&
+            spk_buffers[current_spk_read_buffer].position < spk_buffers[current_spk_read_buffer].size) {
 
-        if (read_buf->ready && read_buf->position < read_buf->size) {
-            // Читаем готовое PPM значение
-            ppm_value = MIN_INTERVAL_CYCLES + read_buf->ppm_buffer[read_buf->position++];
+            ppm_value = MIN_INTERVAL_CYCLES +
+                        spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
 
-            // Если буфер полностью прочитан, освобождаем его
-            if (read_buf->position >= read_buf->size) {
-                read_buf->ready    = false;
-                read_buf->size     = 0;
-                read_buf->position = 0;
+            if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
+                spk_buffers[current_spk_read_buffer].ready    = false;
+                spk_buffers[current_spk_read_buffer].position = 0;
+                spk_buffers[current_spk_read_buffer].size     = 0;
 
-                // Переключаемся на следующий буфер для чтения
-                current_spk_read_buffer = (current_spk_read_buffer + 1) % 2;
+                current_spk_read_buffer = (uint8_t)((current_spk_read_buffer + 1) % 2);
             }
         }
+        else {
+            ppm_value = MIN_INTERVAL_CYCLES;
+        }
 
-        // Отправляем PPM импульс
-        generate_pulse(ppm_value, false);
+        generate_pulse(ppm_value);
 
-        // Устанавливаем следующее прерывание
         timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
     }
 }
 
-// Функция вывода статистики
-void print_audio_stats(void) {
-    static uint32_t last_stats_time = 0;
-
-    if (board_millis() - last_stats_time > 2000) {    // Каждые 2 секунды
-        last_stats_time = board_millis();
-
-        // Статистика буферов динамика
-        int spk_buf0_fill = spk_buffers[0].ready ? (spk_buffers[0].size - spk_buffers[0].position) : 0;
-        int spk_buf1_fill = spk_buffers[1].ready ? (spk_buffers[1].size - spk_buffers[1].position) : 0;
-
-        // Статистика буферов микрофона
-        int mic_buf0_fill = mic_buffers[0].ready ? mic_buffers[0].size : mic_buffers[0].position;
-        int mic_buf1_fill = mic_buffers[1].ready ? mic_buffers[1].size : mic_buffers[1].position;
-
-        printf("STATS: SPK_RX=%lu SPK_PROC=%lu MIC_RX=%lu MIC_TX=%lu TIMER=%lu\r\n",
-               spk_packets_received,
-               spk_samples_processed,
-               mic_samples_received,
-               mic_packets_sent,
-               timer_irq_count);
-
-        printf("BUFFERS: SPK[%d,%d] MIC[%d,%d] WR/RD_IDX=%u/%u %u/%u\r\n",
-               spk_buf0_fill,
-               spk_buf1_fill,
-               mic_buf0_fill,
-               mic_buf1_fill,
-               current_spk_write_buffer,
-               current_spk_read_buffer,
-               current_mic_write_buffer,
-               current_mic_read_buffer);
-
-        // Сброс счетчиков
-        spk_packets_received  = 0;
-        spk_samples_processed = 0;
-        mic_samples_received  = 0;
-        mic_packets_sent      = 0;
-        timer_irq_count       = 0;
-    }
-}
-
-// Замена старой audio_task
-void audio_task(void) {
-    // 1. Обработка динамика (USB -> PPM)
-    spk_task();
-
-    // 2. Обработка микрофона (PPM -> USB)
-    mic_task();
-
-    // 3. Вывод статистики
-    print_audio_stats();
-}
-
-// Обновить second_core_main()
-void second_core_main() {
+void first_core_main() {
     board_init();
-    tusb_init();
     setup_uart();
+
+    init_core_shared_buffer();
 
     tusb_rhport_init_t dev_init = {
         .role  = TUSB_ROLE_DEVICE,
@@ -455,7 +221,6 @@ void second_core_main() {
     TU_LOG1("Laser Audio running\r\n");
     stdio_init_all();
 
-    // Инициализация двойной буферизации
     init_double_buffering();
 
     init_pulse_generator(PIO_FREQ);
@@ -469,24 +234,12 @@ void second_core_main() {
 
     timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
 
-    // На эти (правильные названия и формат):
-    printf("Test: PCM max (32767) -> PPM=%u\n", audio_to_ppm(32767));
-    printf("Test: PCM half max (16384) -> PPM=%u\n", audio_to_ppm(16384));
-    printf("Test: PCM zero (0) -> PPM=%u\n", audio_to_ppm(0));
-    printf("Test: PCM half min (-16384) -> PPM=%u\n", audio_to_ppm(-16384));
-    printf("Test: PCM min (-32767) -> PPM=%u\n", audio_to_ppm(-32767));
-
-    printf("Test: PPM min (0) -> PCM=%d\n", ppm_to_audio(0));
-    printf("Test: PPM mid (511) -> PCM=%d\n", ppm_to_audio(511));
-    printf("Test: PPM max (1023) -> PCM=%d\n", ppm_to_audio(1023));
-
-    // Устанавливаем разрешение принудительно на 16 бит
-    current_resolution = 16;
-
     // Main operation loop on Core1
     while (1) {
         tud_task();
-        audio_task();    // Включает spk_task() и mic_task()
+        spk_task();
+        mic_task();
+        // audio_control_task();
         led_blinking_task();
     }
 }
@@ -568,6 +321,7 @@ static bool tud_audio_clock_set_request(uint8_t rhport, audio_control_request_t 
         TU_VERIFY(request->wLength == sizeof(audio_control_cur_4_t));
 
         current_sample_rate = (uint32_t)((audio_control_cur_4_t const *)buf)->bCur;
+        audio_frame_ticks   = calculate_audio_frame_ticks();
 
         TU_LOG1("Clock set current freq: %" PRIu32 "\r\n", current_sample_rate);
 
@@ -701,86 +455,222 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
     uint8_t const itf = tu_u16_low(tu_le16toh(p_request->wIndex));
     uint8_t const alt = tu_u16_low(tu_le16toh(p_request->wValue));
 
-    printf("USB: Установка интерфейса %d, alt %d\r\n", itf, alt);
+    TU_LOG2("Set interface %d alt %d\r\n", itf, alt);
+    if (ITF_NUM_AUDIO_STREAMING_SPK == itf && alt != 0)
+        blink_interval_ms = BLINK_STREAMING;
 
-    // Обновляем индикацию режима работы
-    if (ITF_NUM_AUDIO_STREAMING_SPK == itf) {
-        if (alt != 0) {
-            blink_interval_ms = BLINK_STREAMING;    // Потоковый режим
-            printf("USB: Включен потоковый режим аудио!\r\n");
-        }
-        else {
-            blink_interval_ms = BLINK_MOUNTED;    // Нет потока данных
-            printf("USB: Отключен потоковый режим аудио\r\n");
-        }
-    }
-
-    // Сбрасываем состояние всех буферов динамика
-    for (int i = 0; i < 2; i++) {
-        spk_buffers[i].size     = 0;
-        spk_buffers[i].position = 0;
-        spk_buffers[i].ready    = false;
-    }
-    current_spk_write_buffer = 0;
-    current_spk_read_buffer  = 0;
-
-    // Устанавливаем разрешение и частоту дискретизации
+    // Clear buffer when streaming format is changed
+    spk_data_size = 0;
     if (alt != 0) {
         current_resolution = resolutions_per_format[alt - 1];
-        audio_frame_ticks  = calculate_audio_frame_ticks();
-
-        printf("USB: Установлено разрешение %d бит, audio_frame_ticks=%lu\r\n",
-               current_resolution,
-               audio_frame_ticks);
-
-        // Перенастраиваем таймер на новую частоту
-        timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
     }
 
     return true;
 }
 
-// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
-//     (void)rhport;
-//     (void)func_id;
-//     (void)ep_out;
-//     (void)cur_alt_setting;
+bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
+    (void)rhport;
+    (void)func_id;
+    (void)ep_out;
+    (void)cur_alt_setting;
 
-//     if (spk_buffer_busy) {
-//         return false;
-//     }
+    // if (sem_initialized) {
+    //     shared_ppm_data.packet_size = (uint16_t)n_bytes_received;
+    // }
 
-//     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
-//     if (spk_data_size > 0) {
-//         spk_buffer_busy = true;
-//     }
+    if (!spk_buffers[current_spk_write_buffer].ready) {
+        spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+        TU_LOG1("RX done pre read callback called, received %d bytes\r\n", spk_data_size);
+        if (sem_initialized) {
+            shared_ppm_data.packet_size = spk_data_size;
+        }
+        return true;
+    }
+    TU_LOG1("RX done pre read callback called, but buffer is not ready\r\n");
+    return false;
+}
 
-//     return true;
-// }
+bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, uint8_t cur_alt_setting) {
+    (void)rhport;
+    (void)itf;
+    (void)ep_in;
+    (void)cur_alt_setting;
 
-// bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting) {
-//     (void)rhport;
-//     (void)func_id;
-//     (void)cur_alt_setting;
+    // static uint8_t silence[192] = {0};
+    // tud_audio_write(silence, sizeof(silence));
 
-//     // Если буфер занят, отказываемся принимать новые данные
-//     if (spk_buffer_busy) {
-//         // Сообщаем об этом для отладки
-//         static uint32_t last_busy_log = 0;
-//         if (board_millis() - last_busy_log > 50) {
-//             last_busy_log = board_millis();
-//             printf("USB: Device busy, NAK sent\r\n");
+    return true;
+
+    // if (mic_buffers[current_mic_read_buffer].ready) {
+    //     uint16_t written = tud_audio_write((uint8_t *)mic_buffers[current_mic_read_buffer].pcm_buffer,
+    //                                        (uint16_t)(mic_buffers[current_mic_read_buffer].size * sizeof(int16_t)));
+
+    //     if (written > 0) {
+    //         // Буфер успешно отправлен, освобождаем его
+    //         mic_buffers[current_mic_read_buffer].ready    = false;
+    //         mic_buffers[current_mic_read_buffer].size     = 0;
+    //         mic_buffers[current_mic_read_buffer].position = 0;
+    //         current_mic_read_buffer                       = (uint8_t)((current_mic_read_buffer + 1) % 2);
+    //         return true;
+    //     }
+    // }
+    // return false;
+}
+
+void spk_task(void) {
+    if (spk_data_size && !spk_buffers[current_spk_write_buffer].ready) {
+        if (current_resolution == 16) {
+            int16_t  *src        = (int16_t *)spk_buf;
+            int16_t  *limit      = (int16_t *)spk_buf + spk_data_size / 2;
+            uint32_t *dst        = spk_buffers[current_spk_write_buffer].ppm_buffer;
+            uint16_t  buffer_pos = 0;
+
+            while (src < limit && buffer_pos < CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4) {
+                int32_t left  = *src++;
+                int32_t right = *src++;
+                int16_t mixed = (int16_t)((left >> 1) + (right >> 1));
+
+                dst[buffer_pos++] = audio_to_ppm(mixed);
+            }
+
+            spk_buffers[current_spk_write_buffer].size     = buffer_pos;
+            spk_buffers[current_spk_write_buffer].position = 0;
+            spk_buffers[current_spk_write_buffer].ready    = true;
+
+            current_spk_write_buffer = (uint8_t)((current_spk_write_buffer + 1) % 2);
+        }
+        spk_data_size = 0;
+    }
+}
+
+void mic_task(void) {
+    // Проверяем, что USB готов
+    if (tud_audio_mounted() && current_resolution == 16) {
+        // Размер пакета
+        uint16_t packet_size = spk_data_size > 0 ? (uint16_t)spk_data_size : 192;
+
+        // Заполняем буфер тишиной
+        memset(mic_buf, 0, packet_size);
+
+        int16_t *dst           = (int16_t *)mic_buf;
+        uint16_t samples_added = 0;
+        uint16_t max_samples   = packet_size / 4;
+
+        // Сначала пробуем получить данные из семафоров, если они инициализированы
+        if (sem_initialized) {
+            // Не блокирующая проверка наличия данных
+            if (sem_try_acquire(&shared_ppm_data.sem_full)) {
+                // Есть данные - обрабатываем буфер
+                uint8_t  read_buf  = shared_ppm_data.read_index;
+                uint16_t available = shared_ppm_data.size[read_buf];
+
+                // Преобразуем PPM в PCM данные для USB
+                for (uint16_t i = 0; i < available && samples_added < max_samples; i++) {
+                    uint32_t ppm_value = shared_ppm_data.buffer[read_buf][i];
+                    int16_t  pcm       = ppm_to_audio(ppm_value);
+
+                    *dst++ = pcm;    // Левый канал
+                    *dst++ = pcm;    // Правый канал
+
+                    samples_added++;
+                }
+
+                // Освобождаем буфер
+                shared_ppm_data.size[read_buf] = 0;
+                shared_ppm_data.read_index     = (uint8_t)((read_buf + 1) % 2);    // Добавляем явное приведение типа
+                sem_release(&shared_ppm_data.sem_empty);
+            }
+        }
+
+        // Если данных из семафоров недостаточно или их нет, используем FIFO
+        while (multicore_fifo_rvalid() && samples_added < max_samples) {
+            uint32_t ppm_value = multicore_fifo_pop_blocking();
+            int16_t  pcm       = ppm_to_audio(ppm_value);
+
+            *dst++ = pcm;    // Левый канал
+            *dst++ = pcm;    // Правый канал
+
+            samples_added++;
+        }
+
+        // Отправка данных через USB
+        tud_audio_write((uint8_t *)mic_buf, packet_size);
+    }
+}
+
+// void mic_task(void) {
+//     // Проверяем, что USB готов и есть данные в FIFO
+//     if (tud_audio_mounted() && current_resolution == 16) {
+//         // Размер пакета должен соответствовать размеру входящего пакета
+//         uint16_t packet_size = spk_data_size > 0 ? spk_data_size : 192;
+
+//         // Заполняем буфер тишиной
+//         memset(mic_buf, 0, packet_size);
+
+//         // Заполняем буфер доступными данными из FIFO (сколько есть)
+//         int16_t *dst           = (int16_t *)mic_buf;
+//         uint16_t samples_added = 0;
+//         uint16_t max_samples   = packet_size / 4;    // Число моно-сэмплов (пар L/R)
+
+//         while (multicore_fifo_rvalid() && samples_added < max_samples) {
+//             // Не блокирующее чтение из FIFO
+//             uint32_t ppm_value = multicore_fifo_pop_blocking();    // Здесь есть данные, так что блокировка минимальна
+
+//             // Преобразование PPM -> PCM и запись в буфер (стерео)
+//             int16_t pcm = ppm_to_audio(ppm_value);
+//             *dst++      = pcm;    // Левый канал
+//             *dst++      = pcm;    // Правый канал
+
+//             samples_added++;
 //         }
 
-//         // Просим TinyUSB отправить NAK пакет
-//         // tud_edpt_stall(ep_out);
-//         return false;
+//         // Отправка данных напрямую без проверки результата
+//         tud_audio_write((uint8_t *)mic_buf, packet_size);
 //     }
-
-//     spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
-//     if (spk_data_size > 0) {
-//         spk_buffer_busy = true;
-//     }
-
-//     return true;
 // }
+
+// void mic_task(void) {
+//     // Если буфер для записи свободен, и пришли данные по FIFO
+//     if (!mic_buffers[current_mic_write_buffer].ready && multicore_fifo_rvalid()) {
+//         uint32_t ppm_value = multicore_fifo_pop_blocking();
+
+//         if (current_resolution == 16) {
+//             int16_t audio_sample = ppm_to_audio(ppm_value);
+
+//             int      pos = mic_buffers[current_mic_write_buffer].position;
+//             int16_t *dst = (int16_t *)mic_buffers[current_mic_write_buffer].pcm_buffer + pos;
+
+//             *dst++ = audio_sample;
+//             *dst++ = audio_sample;
+//             mic_buffers[current_mic_write_buffer].position += 2;
+
+//             if (mic_buffers[current_mic_write_buffer].position >= 96) {
+//                 mic_buffers[current_mic_write_buffer].size =
+//                     mic_buffers[current_mic_write_buffer].position;
+//                 mic_buffers[current_mic_write_buffer].ready = true;
+
+//                 if (!mic_buffers[current_mic_read_buffer].ready) {
+//                     current_mic_read_buffer = current_mic_write_buffer;
+//                 }
+
+//                 current_mic_write_buffer = (uint8_t)((current_mic_write_buffer + 1) % 2);
+//             }
+//         }
+//     }
+// }
+
+//--------------------------------------------------------------------+
+// BLINKING TASK
+//--------------------------------------------------------------------+
+void led_blinking_task(void) {
+    static uint32_t start_ms  = 0;
+    static bool     led_state = false;
+
+    // Blink every interval ms
+    if (board_millis() - start_ms < blink_interval_ms)
+        return;
+    start_ms += blink_interval_ms;
+
+    board_led_write(led_state);
+    led_state = 1 - led_state;
+}

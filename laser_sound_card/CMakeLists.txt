@@ -18,7 +18,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# cmake -DPICO_BOARD=pico -DFAMILY=rp2040 -DCMAKE_BUILD_TYPE=Debug ..
+# cmake -DPICO_BOARD=pico -DFAMILY=rp2040  ..
 
 # ====================================================================================
 set(PICO_BOARD
@@ -58,7 +58,7 @@ project(laser_sound C CXX ASM)
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
-add_executable(laser_sound receiver.c transmitter.c usb_descriptors.c)
+add_executable(laser_sound receiver.c transmitter.c usb_descriptors.c shared_variables.c)
 
 pico_generate_pio_header(laser_sound ${CMAKE_CURRENT_LIST_DIR}/ppm.pio)
 
@@ -80,3 +80,5 @@ target_include_directories(
                       ${TINYUSB_PATH}/hw ${TINYUSB_PATH}/hw/bsp)
 
 pico_add_extra_outputs(laser_sound)
+
+family_configure_device_example(laser_sound noos)

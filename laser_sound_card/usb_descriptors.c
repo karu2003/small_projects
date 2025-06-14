@@ -141,11 +141,11 @@ enum
 char const *string_desc_arr[] =
     {
         (const char[]){0x09, 0x04},    // 0: is supported language is English (0x0409)
-        "ka_ru",                       // 1: Manufacturer
-        "PPM Soud card",               // 2: Product
+        "IPM Group",                   // 1: Manufacturer
+        "Laser Sound Card",            // 2: Product
         NULL,                          // 3: Serials will use unique ID if possible
-        "PPM Speakers",                // 4: Audio Interface
-        "PPM Microphone",              // 5: Audio Interface
+        "Laser Speakers",              // 4: Audio Interface
+        "Laser Microphone",            // 5: Audio Interface
 };
 
 static uint16_t _desc_str[32 + 1];

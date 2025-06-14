@@ -1,4 +1,5 @@
 #include "common.h"
+#include "pico/sem.h"
 #include <pico/stdlib.h>
 
 static PIO           pio = pio0;
@@ -6,23 +7,92 @@ static uint          sm_det;
 static volatile bool detector_running = false;
 
 void update_measurements() {
+    static uint16_t buffer_pos       = 0;
+    static uint8_t  current_buffer   = 0;
+    static bool     buffer_acquired  = false;
+    static uint32_t last_packet_size = 192;    // Начальный размер по умолчанию
+
+    // Получаем текущий размер пакета от первого ядра
+    if (sem_initialized) {
+        // Храним актуальный размер пакета для межъядерного обмена
+        last_packet_size = shared_ppm_data.packet_size > 0 ? shared_ppm_data.packet_size : last_packet_size;
+    }
+
     while (detector_running && !pio_sm_is_rx_fifo_empty(pio, sm_det)) {
         uint32_t measured_width  = pio_sm_get(pio, sm_det);
         uint32_t corrected_width = (measured_width + MIN_TACKT) - MIN_INTERVAL_CYCLES;
 
         if (corrected_width > 0 && corrected_width <= MAX_CODE) {
-            if (multicore_fifo_wready()) {
+            // Если система семафоров инициализирована
+            if (sem_initialized) {
+                // Если буфер ещё не получен - пробуем получить пустой буфер
+                if (!buffer_acquired) {
+                    if (sem_try_acquire(&shared_ppm_data.sem_empty)) {
+                        // Получен пустой буфер
+                        current_buffer  = shared_ppm_data.write_index;
+                        buffer_pos      = 0;
+                        buffer_acquired = true;
+                    }
+                }
+
+                // Записываем данные, если буфер доступен
+                if (buffer_acquired) {
+                    shared_ppm_data.buffer[current_buffer][buffer_pos++] = corrected_width;
+
+                    // Если буфер заполнен до размера пакета, уведомляем другое ядро
+                    if (buffer_pos >= last_packet_size / 4 || buffer_pos >= 128) {    // Делим на 4 для стерео 16 бит
+                        shared_ppm_data.size[current_buffer] = buffer_pos;
+                        shared_ppm_data.write_index          = (uint8_t)((current_buffer + 1) % 2);
+                        sem_release(&shared_ppm_data.sem_full);
+                        buffer_acquired = false;
+                    }
+                }
+            }
+            // Иначе используем старый механизм FIFO
+            else if (multicore_fifo_wready()) {
                 multicore_fifo_push_blocking(corrected_width);
             }
         }
     }
+
+    // Если буфер частично заполнен и давно не было данных,
+    // отправляем то что есть (по таймауту)
+    if (buffer_acquired && buffer_pos > 0) {
+        static uint32_t last_update_time = 0;
+        uint32_t        current_time     = time_us_32();
+
+        // Исправление во второй части функции (по таймауту)
+        if (current_time - last_update_time > 5000) {    // 5 мс
+            shared_ppm_data.size[current_buffer] = buffer_pos;
+            shared_ppm_data.write_index          = (uint8_t)((current_buffer + 1) % 2);
+            sem_release(&shared_ppm_data.sem_full);
+            buffer_acquired  = false;
+            last_update_time = current_time;
+        }
+    }
 }
+
+// void update_measurements() {
+//     while (detector_running && !pio_sm_is_rx_fifo_empty(pio, sm_det)) {
+//         uint32_t measured_width  = pio_sm_get(pio, sm_det);
+//         uint32_t corrected_width = (measured_width + MIN_TACKT) - MIN_INTERVAL_CYCLES;
+
+//         if (corrected_width > 0 && corrected_width <= MAX_CODE) {
+//             if (multicore_fifo_wready()) {
+//                 multicore_fifo_push_blocking(corrected_width);
+//             }
+//         }
+//     }
+// }
 
 // Initialize PIO for pulse detector
 void init_pulse_detector(float freq) {
-    sm_det               = pio_claim_unused_sm(pio, true);
-    uint          offset = pio_add_program(pio, &pulse_detector_program);
-    pio_sm_config c      = pulse_detector_program_get_default_config(offset);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+    sm_det      = pio_claim_unused_sm(pio, true);
+    uint offset = pio_add_program(pio, &pulse_detector_program);
+#pragma GCC diagnostic pop
+    pio_sm_config c = pulse_detector_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, PULSE_DET_PIN);
     sm_config_set_jmp_pin(&c, PULSE_DET_PIN);
@@ -39,8 +109,7 @@ void start_detector() {
     detector_running = true;
 }
 
-// Main function for Core0 (receiver)
-void first_core_main() {
+void second_core_main() {
     init_pulse_detector(PIO_FREQ);
     start_detector();
 
