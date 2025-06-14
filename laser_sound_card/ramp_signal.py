@@ -52,7 +52,7 @@ class AudioRampGenerator:
         return None
 
     def generate_ramp_signal(self, duration=10.0, ramp_type="linear"):
-        """Генерация сигнала заданной длительности в диапазоне от -1 до 1"""
+        """Генерация сигнала заданной длительности в диапазоне int16"""
         # Расчет количества отсчетов
         num_samples = int(self.sample_rate * duration)
         
@@ -79,14 +79,19 @@ class AudioRampGenerator:
             # Синусоидальная частотная развертка от 20 Гц до 20 кГц
             t = np.linspace(0, duration, num_samples)
             phase = 2 * np.pi * 20 * duration / np.log(20000/20) * (np.exp(t/duration * np.log(20000/20)) - 1)
-            signal_data = self.amplitude * np.sin(phase)  # синус уже даёт диапазон от -amplitude до +amplitude
+            signal_data = self.amplitude * np.sin(phase)
         else:
             print(f"Неизвестный тип сигнала: {ramp_type}. Использую линейную рампу.")
             signal_data = np.linspace(-self.amplitude, self.amplitude, num_samples)
-            
+    
+        # ИСПРАВЛЕНИЕ: масштабируем сигнал в диапазон int16 перед приведением типа
+        signal_int16 = (signal_data * 32767).astype(np.int16)
+    
         print(f"Создан сигнал типа {ramp_type}: {num_samples} отсчетов, {duration:.2f} секунд")
-        print(f"Диапазон сигнала: от {np.min(signal_data):.2f} до {np.max(signal_data):.2f}")
-        return signal_data.astype(np.float32)
+        print(f"Диапазон float сигнала: от {np.min(signal_data):.3f} до {np.max(signal_data):.3f}")
+        print(f"Диапазон int16 сигнала: от {np.min(signal_int16)} до {np.max(signal_int16)}")
+    
+        return signal_int16
 
     def play_signal(self, signal_data):
         """Воспроизведение сигнала через аудиокарту без записи"""
@@ -104,16 +109,17 @@ class AudioRampGenerator:
         print(f"Длительность: {len(signal_data)/self.sample_rate:.2f} секунд")
 
         # Создаем массив для всех каналов
-        out_data = np.zeros((len(signal_data), out_channels), dtype=np.float32)
+        out_data = np.zeros((len(signal_data), out_channels), dtype=np.int16)
         
         # Заполняем все каналы сигналом
         for ch in range(out_channels):
             out_data[:, ch] = signal_data
-        
+    
         try:
-            # Воспроизведение сигнала блокирующим методом для точного тайминга
+            # Воспроизведение сигнала с указанием типа int16
             start_time = time.time()
-            sd.play(out_data, samplerate=self.sample_rate, device=self.device_id, blocking=True)
+            sd.play(out_data, samplerate=self.sample_rate, device=self.device_id, 
+                    dtype='int16', blocking=True)
             elapsed = time.time() - start_time
             
             print(f"Воспроизведение завершено! Затраченное время: {elapsed:.3f} секунд")

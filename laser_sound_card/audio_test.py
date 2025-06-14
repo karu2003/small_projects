@@ -87,6 +87,8 @@ class AudioTester:
         else:
             raise ValueError(f"Неизвестный тип теста: {test_type}")
 
+        # Масштабируем для int16
+        signal_data = (signal_data * 32767).astype(np.int16)
         return signal_data.astype(np.float32)
 
     def run_audio_test(
@@ -155,7 +157,7 @@ class AudioTester:
         print(f"Доступно каналов: вход - {in_channels}, выход - {out_channels}")
 
         # Массив для записи
-        recorded = np.zeros((len(test_signal), in_channels), dtype=np.float32)
+        recorded = np.zeros((len(test_signal), in_channels), dtype=np.int16)
         signal_detected = False
 
         def callback(indata, outdata, frames, time, status):
@@ -194,7 +196,7 @@ class AudioTester:
                 channels=(in_channels, out_channels),
                 samplerate=self.sample_rate,
                 callback=callback,
-                dtype=np.float32,
+                dtype=np.int16,
             ):
                 print(f"Воспроизведение и запись в течение {duration} секунд...")
                 sd.sleep(int(duration * 1000) + 500)
