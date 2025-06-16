@@ -22,11 +22,12 @@ void update_measurements() {
 
     while (detector_running && !pio_sm_is_rx_fifo_empty(pio, sm_det)) {
         uint32_t measured_width  = pio_sm_get(pio, sm_det);
-        uint32_t corrected_width = (measured_width + MIN_TACKT) - MIN_INTERVAL_CYCLES;
+        uint16_t corrected_width = (uint16_t)(measured_width + MIN_TACKT) - MIN_INTERVAL_CYCLES;
         statistics.total_received++;
 
         if (corrected_width > 0 && corrected_width <= MAX_CODE) {
             statistics.total_ppm_received++;
+            statistics.total_summed_pcm += corrected_width;
             // Если система семафоров инициализирована
             if (sem_initialized) {
                 // Если буфер ещё не получен - пробуем получить пустой буфер

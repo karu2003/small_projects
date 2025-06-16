@@ -63,7 +63,8 @@ enum
     VOLUME_CTRL_SILENCE = 0x8000,
 };
 
-static const float    MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD / 2;
+// static const float    MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD / 2;
+static const float    MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD;
 static const float    PIO_FREQ            = SYS_FREQ * 1000.0f;
 // static const uint16_t MIN_INTERVAL_CYCLES =
 //     (uint16_t)MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);
@@ -83,6 +84,8 @@ typedef struct {
     uint32_t total_ppm_received;
     uint32_t total_sent;
     uint32_t total_received;
+    uint64_t total_summed_ppm;    // Сумма всех PPM значений
+    uint64_t total_summed_pcm;    // Сумма всех PCM значений
 } statistics_t;
 
 // Структура для двойной буферизации динамика

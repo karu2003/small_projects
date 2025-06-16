@@ -53,7 +53,7 @@ static volatile uint32_t timer_irq_count      = 0;
 static volatile uint32_t spk_buf_pos          = 0;
 static volatile bool     buffer_being_updated = false;
 
-volatile statistics_t statistics = {0, 0, 0, 0, 0, 0};
+volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0};
 
 void led_blinking_task(void);
 void spk_task(void);
@@ -156,6 +156,7 @@ void timer0_irq_handler() {
             ppm_value = MIN_INTERVAL_CYCLES +
                         spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
             statistics.total_ppm_sent++;
+            statistics.total_summed_ppm += ppm_value;
 
             if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
                 spk_buffers[current_spk_read_buffer].ready    = false;
@@ -674,6 +675,8 @@ void statistics_task(void) {
     printf("  Total PPM received: %lu\r\n", statistics.total_ppm_received);
     printf("  Total sent: %lu\r\n", statistics.total_sent);
     printf("  Total received: %lu\r\n", statistics.total_received);
+    printf("  Total summed PPM: %llu\r\n", statistics.total_summed_ppm);
+    printf("  Total summed PCM: %llu\r\n", statistics.total_summed_pcm);
 
     // Reset statistics after printing
     statistics.total_pcm_received = 0;
@@ -682,4 +685,6 @@ void statistics_task(void) {
     statistics.total_ppm_received = 0;
     statistics.total_sent         = 0;
     statistics.total_received     = 0;
+    statistics.total_summed_ppm   = 0;
+    statistics.total_summed_pcm   = 0;
 }
