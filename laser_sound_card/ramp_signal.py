@@ -144,6 +144,8 @@ class AudioRampGenerator:
             )
             elapsed = time.time() - start_time
 
+            print("Total bytes played:", out_data.size * out_data.itemsize)
+
             print(f"Воспроизведение завершено! Затраченное время: {elapsed:.3f} секунд")
             return True
 

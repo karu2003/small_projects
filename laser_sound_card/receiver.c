@@ -6,6 +6,8 @@ static PIO           pio = pio0;
 static uint          sm_det;
 static volatile bool detector_running = false;
 
+extern statistics_t statistics;
+
 void update_measurements() {
     static uint16_t buffer_pos       = 0;
     static uint8_t  current_buffer   = 0;
@@ -21,8 +23,10 @@ void update_measurements() {
     while (detector_running && !pio_sm_is_rx_fifo_empty(pio, sm_det)) {
         uint32_t measured_width  = pio_sm_get(pio, sm_det);
         uint32_t corrected_width = (measured_width + MIN_TACKT) - MIN_INTERVAL_CYCLES;
+        statistics.total_received++;
 
         if (corrected_width > 0 && corrected_width <= MAX_CODE) {
+            statistics.total_ppm_received++;
             // Если система семафоров инициализирована
             if (sem_initialized) {
                 // Если буфер ещё не получен - пробуем получить пустой буфер

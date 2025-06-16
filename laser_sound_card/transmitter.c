@@ -19,36 +19,6 @@ uint32_t current_sample_rate = AUDIO_SAMPLE_RATE;
 
 #define N_SAMPLE_RATES TU_ARRAY_SIZE(sample_rates)
 
-/* Blink pattern
- * - 25 ms   : streaming data
- * - 250 ms  : device not mounted
- * - 1000 ms : device mounted
- * - 2500 ms : device is suspended
- */
-enum
-{
-    BLINK_STREAMING   = 25,
-    BLINK_NOT_MOUNTED = 250,
-    BLINK_MOUNTED     = 1000,
-    BLINK_SUSPENDED   = 2500,
-};
-
-enum
-{
-    VOLUME_CTRL_0_DB    = 0,
-    VOLUME_CTRL_10_DB   = 2560,
-    VOLUME_CTRL_20_DB   = 5120,
-    VOLUME_CTRL_30_DB   = 7680,
-    VOLUME_CTRL_40_DB   = 10240,
-    VOLUME_CTRL_50_DB   = 12800,
-    VOLUME_CTRL_60_DB   = 15360,
-    VOLUME_CTRL_70_DB   = 17920,
-    VOLUME_CTRL_80_DB   = 20480,
-    VOLUME_CTRL_90_DB   = 23040,
-    VOLUME_CTRL_100_DB  = 25600,
-    VOLUME_CTRL_SILENCE = 0x8000,
-};
-
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
 // Audio controls
@@ -83,15 +53,16 @@ static volatile uint32_t timer_irq_count      = 0;
 static volatile uint32_t spk_buf_pos          = 0;
 static volatile bool     buffer_being_updated = false;
 
+volatile statistics_t statistics = {0, 0, 0, 0, 0, 0};
+
 void led_blinking_task(void);
 void spk_task(void);
 void mic_task(void);
 void audio_control_task(void);
+void statistics_task(void);
 
 static PIO  pio = pio1;    // Use another PIO to avoid conflicts
 static uint sm_gen;
-
-volatile uint32_t ppm_code_to_send = 0;
 
 uint32_t audio_frame_ticks;
 
@@ -165,8 +136,8 @@ void init_pulse_generator(float freq) {
     pio_sm_set_enabled(pio, sm_gen, true);
 }
 
-uint32_t audio_to_ppm(int16_t audio_sample) {
-    return (uint32_t)(((int64_t)audio_sample + 32768) * 1024 / 65536);
+uint16_t audio_to_ppm(int16_t audio_sample) {
+    return (uint16_t)(((int64_t)audio_sample + 32768) * 1024 / 65536);
 }
 
 int16_t ppm_to_audio(uint32_t ppm_value) {
@@ -184,6 +155,7 @@ void timer0_irq_handler() {
 
             ppm_value = MIN_INTERVAL_CYCLES +
                         spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
+            statistics.total_ppm_sent++;
 
             if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
                 spk_buffers[current_spk_read_buffer].ready    = false;
@@ -198,7 +170,7 @@ void timer0_irq_handler() {
         }
 
         generate_pulse(ppm_value);
-
+        statistics.total_sent++;
         timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
     }
 }
@@ -234,11 +206,20 @@ void first_core_main() {
 
     timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
 
+    // test audio zo PPM
+    printf("Audio to PPM(-32768): %d\r\n", audio_to_ppm(-32768));
+    printf("Audio to PPM(0): %d\r\n", audio_to_ppm(0));
+    printf("Audio to PPM(32767): %d\r\n", audio_to_ppm(32767));
+    printf("PPM to Audio(0): %d\r\n", ppm_to_audio(0));
+    printf("PPM to Audio(512): %d\r\n", ppm_to_audio(512));
+    printf("PPM to Audio(1023): %d\r\n", ppm_to_audio(1023));
+
     // Main operation loop on Core1
     while (1) {
         tud_task();
         spk_task();
         mic_task();
+        statistics_task();
         // audio_control_task();
         led_blinking_task();
     }
@@ -480,6 +461,7 @@ bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, ui
 
     if (!spk_buffers[current_spk_write_buffer].ready) {
         spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
+        statistics.total_pcm_received += spk_data_size;
         TU_LOG1("RX done pre read callback called, received %d bytes\r\n", spk_data_size);
         if (sem_initialized) {
             shared_ppm_data.packet_size = spk_data_size;
@@ -522,15 +504,16 @@ void spk_task(void) {
         if (current_resolution == 16) {
             int16_t  *src        = (int16_t *)spk_buf;
             int16_t  *limit      = (int16_t *)spk_buf + spk_data_size / 2;
-            uint32_t *dst        = spk_buffers[current_spk_write_buffer].ppm_buffer;
+            uint16_t *dst        = spk_buffers[current_spk_write_buffer].ppm_buffer;
             uint16_t  buffer_pos = 0;
 
-            while (src < limit && buffer_pos < CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4) {
+            while (src < limit) {
                 int32_t left  = *src++;
                 int32_t right = *src++;
                 int16_t mixed = (int16_t)((left >> 1) + (right >> 1));
 
                 dst[buffer_pos++] = audio_to_ppm(mixed);
+                statistics.total_ppm_convert++;
             }
 
             spk_buffers[current_spk_write_buffer].size     = buffer_pos;
@@ -568,6 +551,7 @@ void mic_task(void) {
                 for (uint16_t i = 0; i < available && samples_added < max_samples; i++) {
                     uint32_t ppm_value = shared_ppm_data.buffer[read_buf][i];
                     int16_t  pcm       = ppm_to_audio(ppm_value);
+                    statistics.total_ppm_convert++;
 
                     *dst++ = pcm;    // Левый канал
                     *dst++ = pcm;    // Правый канал
@@ -673,4 +657,29 @@ void led_blinking_task(void) {
 
     board_led_write(led_state);
     led_state = 1 - led_state;
+}
+
+void statistics_task(void) {
+    // Print statistics every 15 seconds
+    static uint32_t last_print_ms = 0;
+
+    if (board_millis() - last_print_ms < 15000)
+        return;
+    last_print_ms = board_millis();
+
+    printf("Statistics:\r\n");
+    printf("  Total PCM received: %lu\r\n", statistics.total_pcm_received);
+    printf("  Total PPM converted: %lu\r\n", statistics.total_ppm_convert);
+    printf("  Total PPM sent: %lu\r\n", statistics.total_ppm_sent);
+    printf("  Total PPM received: %lu\r\n", statistics.total_ppm_received);
+    printf("  Total sent: %lu\r\n", statistics.total_sent);
+    printf("  Total received: %lu\r\n", statistics.total_received);
+
+    // Reset statistics after printing
+    statistics.total_pcm_received = 0;
+    statistics.total_ppm_convert  = 0;
+    statistics.total_ppm_sent     = 0;
+    statistics.total_ppm_received = 0;
+    statistics.total_sent         = 0;
+    statistics.total_received     = 0;
 }
