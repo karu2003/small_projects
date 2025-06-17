@@ -26,7 +26,7 @@
 #if SYS_FREQ == 133000
 #define MIN_TACKT 5
 #elif SYS_FREQ == 250000
-#define MIN_TACKT 10
+#define MIN_TACKT 8
 #endif
 
 #define MAX_CODE         1024

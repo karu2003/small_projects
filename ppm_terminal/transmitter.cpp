@@ -25,7 +25,7 @@ void timer0_irq_handler() {
         uint32_t ppm_value;
         if (has_custom_value) {
             ppm_value        = MIN_INTERVAL_CYCLES + ppm_code_to_send;
-            // has_custom_value = false;
+            has_custom_value = false;
         }
         else {
             ppm_value = MIN_INTERVAL_CYCLES;

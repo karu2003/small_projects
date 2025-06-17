@@ -152,6 +152,8 @@ void timer0_irq_handler() {
 
         if (spk_buffers[current_spk_read_buffer].ready &&
             spk_buffers[current_spk_read_buffer].position < spk_buffers[current_spk_read_buffer].size) {
+            
+            // statistics.total_summed_ppm += spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position];
 
             ppm_value = MIN_INTERVAL_CYCLES +
                         spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
@@ -512,9 +514,11 @@ void spk_task(void) {
                 int32_t left  = *src++;
                 int32_t right = *src++;
                 int16_t mixed = (int16_t)((left >> 1) + (right >> 1));
-
+                
+                statistics.total_summed_ppm += audio_to_ppm(mixed);
                 dst[buffer_pos++] = audio_to_ppm(mixed);
                 statistics.total_ppm_convert++;
+                
             }
 
             spk_buffers[current_spk_write_buffer].size     = buffer_pos;

@@ -7,7 +7,7 @@
     ; nop side 1
     set pins, 0      side 0
 pause:
-    ;nop side 0
+    nop side 0
     jmp x--, pause   side 0
 
     set pins, 1      side 1
@@ -17,9 +17,9 @@ pause:
 
 .program pulse_detector
 .wrap_target
-    wait 0 pin 0        ; wait for negative edge (end of pulse, start of pause)
+    wait 0 pin 0 [2]    ; wait for negative edge (end of pulse, start of pause)
     wait 1 pin 0        ; wait for high signal level (pulse)
-    wait 0 pin 0        ; wait for negative edge (end of pulse, start of pause)
+    wait 0 pin 0 [2]    ; wait for negative edge (end of pulse, start of pause)
     mov y ~NULL         ; initialize counter with maximum value
 count_loop:
     jmp pin finish      ; check if high level appeared - pause ended

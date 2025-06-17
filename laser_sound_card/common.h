@@ -21,12 +21,13 @@
 #define PULSE_DET_PIN 1
 #define LED_PIN       25
 
+// #define SYS_FREQ 133000
 #define SYS_FREQ 250000
 
 #if SYS_FREQ == 133000
 #define MIN_TACKT 5
 #elif SYS_FREQ == 250000
-#define MIN_TACKT 10
+#define MIN_TACKT 8
 #endif
 
 #define MAX_CODE          1024
@@ -63,14 +64,16 @@ enum
     VOLUME_CTRL_SILENCE = 0x8000,
 };
 
-// static const float    MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD / 2;
-static const float    MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD;
-static const float    PIO_FREQ            = SYS_FREQ * 1000.0f;
+static const float MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD / 2;
+static const float PIO_FREQ            = SYS_FREQ * 1000.0f;
 // static const uint16_t MIN_INTERVAL_CYCLES =
 //     (uint16_t)MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);
 
+// static const uint16_t MIN_INTERVAL_CYCLES =
+//     (uint16_t)(MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000.0f) + 0.5f);
+
 static const uint16_t MIN_INTERVAL_CYCLES =
-    (uint16_t)(MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000.0f) + 0.5f);
+    MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);
 
 // Main function signatures
 void first_core_main(void);     // Function for Core0 (receiver)
