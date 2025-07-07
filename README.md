@@ -32,6 +32,8 @@ export PICO_EXTRAS_PATH=/home/andrew/pico/pico-extras
 export PICO_PLAYGROUND_PATH=/home/andrew/pico/pico-playground
 export TinyUSB_PATH=/home/andrew/pico/tinyusb
 
+https://github.com/mdhosale/microphone-library-for-pico-analogpassthrough-midiIO/blob/main/examples/usb_microphone/usb_microphone.c
+
 
 
 
