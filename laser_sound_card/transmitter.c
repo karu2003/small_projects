@@ -53,7 +53,7 @@ static volatile uint32_t timer_irq_count      = 0;
 static volatile uint32_t spk_buf_pos          = 0;
 static volatile bool     buffer_being_updated = false;
 
-volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0};
+volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 void led_blinking_task(void);
 void spk_task(void);
@@ -556,7 +556,7 @@ void mic_task(void) {
                 for (uint16_t i = 0; i < available && samples_added < max_samples; i++) {
                     uint32_t ppm_value = shared_ppm_data.buffer[read_buf][i];
                     int16_t  pcm       = ppm_to_audio(ppm_value);
-                    statistics.total_ppm_convert++;
+                    statistics.total_pcm_convert++;
 
                     *dst++ = pcm;    // Левый канал
                     *dst++ = pcm;    // Правый канал
@@ -675,6 +675,7 @@ void statistics_task(void) {
     printf("Statistics:\r\n");
     printf("  Total PCM received: %lu\r\n", statistics.total_pcm_received);
     printf("  Total PPM converted: %lu\r\n", statistics.total_ppm_convert);
+    printf("  Total PCM converted: %lu\r\n", statistics.total_pcm_convert);
     printf("  Total PPM sent: %lu\r\n", statistics.total_ppm_sent);
     printf("  Total PPM received: %lu\r\n", statistics.total_ppm_received);
     printf("  Total sent: %lu\r\n", statistics.total_sent);
@@ -685,6 +686,7 @@ void statistics_task(void) {
     // Reset statistics after printing
     statistics.total_pcm_received = 0;
     statistics.total_ppm_convert  = 0;
+    statistics.total_pcm_convert  = 0;
     statistics.total_ppm_sent     = 0;
     statistics.total_ppm_received = 0;
     statistics.total_sent         = 0;

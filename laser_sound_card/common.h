@@ -83,6 +83,7 @@ void second_core_main(void);    // Function for Core1 (transmitter + interface)
 typedef struct {
     uint32_t total_pcm_received;
     uint32_t total_ppm_convert;
+    uint32_t total_pcm_convert;
     uint32_t total_ppm_sent;
     uint32_t total_ppm_received;
     uint32_t total_sent;
