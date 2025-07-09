@@ -55,7 +55,7 @@ static volatile uint32_t timer_irq_count      = 0;
 static volatile uint32_t spk_buf_pos          = 0;
 static volatile bool     buffer_being_updated = false;
 
-volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 void led_blinking_task(void);
 void spk_task(void);
@@ -578,7 +578,7 @@ void mic_task(void) {
         }
 
         // Если данных из семафоров недостаточно или их нет, используем FIFO
-        while (multicore_fifo_rvalid() && samples_added < max_samples) {
+        while (multicore_fifo_rvalid() /*&& samples_added < max_samples*/) {
             uint32_t ppm_value = multicore_fifo_pop_blocking();
             statistics.total_summed_ppm_in_usb += ppm_value;
             int16_t  pcm       = ppm_to_audio(ppm_value);
@@ -595,8 +595,11 @@ void mic_task(void) {
         }
 
         // Отправка данных через USB
+        // TODO: send incomplete packets at end of transmission.
         if(pcm_ticks_in_buffer == packet_size) {
-            tud_audio_write((uint8_t *)mic_buf, packet_size);
+            uint16_t bytes_written = tud_audio_write((uint8_t *)mic_buf, pcm_ticks_in_buffer*2); // pcm_ticks_in_buffer*2 because pcm ticks are 16bit and we're counting bytes here.
+            statistics.total_ticks_attempt_send_to_usb += pcm_ticks_in_buffer;
+            statistics.total_bytes_sent_to_usb += bytes_written;
             pcm_ticks_in_buffer = 0;
         }
     }
@@ -698,6 +701,8 @@ void statistics_task(void) {
     printf("  Total summed PPM out: %llu\r\n", statistics.total_summed_ppm_out);
     printf("  Total summed PPM in: %llu\r\n", statistics.total_summed_ppm_in);
     printf("  Total summed PPM before USB communication: %llu\r\n", statistics.total_summed_ppm_in_usb);
+    printf("  Total ticks attempted to send to USB: %llu\r\n", statistics.total_ticks_attempt_send_to_usb);
+    printf("  Total total bytes sent to USB: %llu\r\n", statistics.total_bytes_sent_to_usb);
 
     // Reset statistics after printing
     statistics.total_pcm_received      = 0;
@@ -710,4 +715,6 @@ void statistics_task(void) {
     statistics.total_summed_ppm_out    = 0;
     statistics.total_summed_ppm_in     = 0;
     statistics.total_summed_ppm_in_usb = 0;
+    statistics.total_ticks_attempt_send_to_usb = 0;
+    statistics.total_bytes_sent_to_usb = 0;
 }

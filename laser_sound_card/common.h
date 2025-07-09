@@ -91,6 +91,8 @@ typedef struct {
     uint64_t total_summed_ppm_out;    // Сумма всех PPM значений на выходе
     uint64_t total_summed_ppm_in;     // Сумма всех PPM значений на входе
     uint64_t total_summed_ppm_in_usb; // Сумма всех PPM значений после приёма, перед пересылкой по USB
+    uint64_t total_ticks_attempt_send_to_usb;
+    uint64_t total_bytes_sent_to_usb;
 } statistics_t;
 
 // Структура для двойной буферизации динамика
