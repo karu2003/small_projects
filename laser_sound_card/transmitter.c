@@ -153,12 +153,12 @@ void timer0_irq_handler() {
         if (spk_buffers[current_spk_read_buffer].ready &&
             spk_buffers[current_spk_read_buffer].position < spk_buffers[current_spk_read_buffer].size) {
             
-            // statistics.total_summed_ppm += spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position];
+            // statistics.total_summed_ppm_out += spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position];
 
             ppm_value = MIN_INTERVAL_CYCLES +
                         spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
             statistics.total_ppm_sent++;
-            statistics.total_summed_ppm += (ppm_value - MIN_INTERVAL_CYCLES);
+            statistics.total_summed_ppm_out += (ppm_value - MIN_INTERVAL_CYCLES);
 
             if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
                 spk_buffers[current_spk_read_buffer].ready    = false;
@@ -515,7 +515,7 @@ void spk_task(void) {
                 int32_t right = *src++;
                 int16_t mixed = (int16_t)((left >> 1) + (right >> 1));
                 
-                // statistics.total_summed_ppm += audio_to_ppm(mixed);
+                // statistics.total_summed_ppm_out += audio_to_ppm(mixed);
                 dst[buffer_pos++] = audio_to_ppm(mixed);
                 statistics.total_ppm_convert++;
                 
@@ -680,17 +680,17 @@ void statistics_task(void) {
     printf("  Total PPM received: %lu\r\n", statistics.total_ppm_received);
     printf("  Total sent: %lu\r\n", statistics.total_sent);
     printf("  Total received: %lu\r\n", statistics.total_received);
-    printf("  Total summed PPM: %llu\r\n", statistics.total_summed_ppm);
-    printf("  Total summed PCM: %llu\r\n", statistics.total_summed_pcm);
+    printf("  Total summed PPM out: %llu\r\n", statistics.total_summed_ppm_out);
+    printf("  Total summed PPM in: %llu\r\n", statistics.total_summed_ppm_in);
 
     // Reset statistics after printing
-    statistics.total_pcm_received = 0;
-    statistics.total_ppm_convert  = 0;
-    statistics.total_pcm_convert  = 0;
-    statistics.total_ppm_sent     = 0;
-    statistics.total_ppm_received = 0;
-    statistics.total_sent         = 0;
-    statistics.total_received     = 0;
-    statistics.total_summed_ppm   = 0;
-    statistics.total_summed_pcm   = 0;
+    statistics.total_pcm_received   = 0;
+    statistics.total_ppm_convert    = 0;
+    statistics.total_pcm_convert    = 0;
+    statistics.total_ppm_sent       = 0;
+    statistics.total_ppm_received   = 0;
+    statistics.total_sent           = 0;
+    statistics.total_received       = 0;
+    statistics.total_summed_ppm_out = 0;
+    statistics.total_summed_ppm_in  = 0;
 }

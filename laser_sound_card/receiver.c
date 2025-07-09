@@ -27,7 +27,7 @@ void update_measurements() {
 
         if (corrected_width > 0 && corrected_width <= MAX_CODE) {
             statistics.total_ppm_received++;
-            statistics.total_summed_pcm += corrected_width;
+            statistics.total_summed_ppm_in += corrected_width;
             // Если система семафоров инициализирована
             if (sem_initialized) {
                 // Если буфер ещё не получен - пробуем получить пустой буфер

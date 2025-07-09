@@ -88,8 +88,8 @@ typedef struct {
     uint32_t total_ppm_received;
     uint32_t total_sent;
     uint32_t total_received;
-    uint64_t total_summed_ppm;    // Сумма всех PPM значений
-    uint64_t total_summed_pcm;    // Сумма всех PCM значений
+    uint64_t total_summed_ppm_out;    // Сумма всех PPM значений на выходе
+    uint64_t total_summed_ppm_in;    // Сумма всех PPM значений на входе
 } statistics_t;
 
 // Структура для двойной буферизации динамика
