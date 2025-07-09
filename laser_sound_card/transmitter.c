@@ -702,7 +702,7 @@ void statistics_task(void) {
     printf("  Total summed PPM in: %llu\r\n", statistics.total_summed_ppm_in);
     printf("  Total summed PPM before USB communication: %llu\r\n", statistics.total_summed_ppm_in_usb);
     printf("  Total ticks attempted to send to USB: %llu\r\n", statistics.total_ticks_attempt_send_to_usb);
-    printf("  Total total bytes sent to USB: %llu\r\n", statistics.total_bytes_sent_to_usb);
+    printf("  Total bytes sent to USB: %llu\r\n", statistics.total_bytes_sent_to_usb);
 
     // Reset statistics after printing
     statistics.total_pcm_received      = 0;
