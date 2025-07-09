@@ -53,7 +53,7 @@ static volatile uint32_t timer_irq_count      = 0;
 static volatile uint32_t spk_buf_pos          = 0;
 static volatile bool     buffer_being_updated = false;
 
-volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 void led_blinking_task(void);
 void spk_task(void);
@@ -555,6 +555,7 @@ void mic_task(void) {
                 // Преобразуем PPM в PCM данные для USB
                 for (uint16_t i = 0; i < available && samples_added < max_samples; i++) {
                     uint32_t ppm_value = shared_ppm_data.buffer[read_buf][i];
+                    statistics.total_summed_ppm_in_usb += ppm_value;
                     int16_t  pcm       = ppm_to_audio(ppm_value);
                     statistics.total_pcm_convert++;
 
@@ -682,15 +683,17 @@ void statistics_task(void) {
     printf("  Total received: %lu\r\n", statistics.total_received);
     printf("  Total summed PPM out: %llu\r\n", statistics.total_summed_ppm_out);
     printf("  Total summed PPM in: %llu\r\n", statistics.total_summed_ppm_in);
+    printf("  Total summed PPM before USB communication: %llu\r\n", statistics.total_summed_ppm_in_usb);
 
     // Reset statistics after printing
-    statistics.total_pcm_received   = 0;
-    statistics.total_ppm_convert    = 0;
-    statistics.total_pcm_convert    = 0;
-    statistics.total_ppm_sent       = 0;
-    statistics.total_ppm_received   = 0;
-    statistics.total_sent           = 0;
-    statistics.total_received       = 0;
-    statistics.total_summed_ppm_out = 0;
-    statistics.total_summed_ppm_in  = 0;
+    statistics.total_pcm_received      = 0;
+    statistics.total_ppm_convert       = 0;
+    statistics.total_pcm_convert       = 0;
+    statistics.total_ppm_sent          = 0;
+    statistics.total_ppm_received      = 0;
+    statistics.total_sent              = 0;
+    statistics.total_received          = 0;
+    statistics.total_summed_ppm_out    = 0;
+    statistics.total_summed_ppm_in     = 0;
+    statistics.total_summed_ppm_in_usb = 0;
 }
