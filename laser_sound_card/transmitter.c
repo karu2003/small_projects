@@ -28,6 +28,7 @@ int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master chan
 
 // Buffer for microphone data
 int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
+int16_t *mic_dst;
 // Buffer for speaker data
 int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
 // Speaker data size received in the last frame
@@ -38,6 +39,7 @@ const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_
 // Current resolution, update on format change
 uint8_t current_resolution;
 uint8_t has_custom_value = false;
+uint16_t pcm_ticks_in_buffer = 0;
 
 // Двойные буферы для динамика (USB -> PPM)
 static spk_ppm_buffer_t spk_buffers[2];
@@ -484,7 +486,6 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
 
     // static uint8_t silence[192] = {0};
     // tud_audio_write(silence, sizeof(silence));
-    tud_audio_write((uint8_t *)mic_buf, 192);
 
     return true;
 
@@ -537,12 +538,14 @@ void mic_task(void) {
     // Проверяем, что USB готов
     if (tud_audio_mounted() && current_resolution == 16) {
         // Размер пакета
-        uint16_t packet_size = spk_data_size > 0 ? (uint16_t)spk_data_size : 192;
+        uint16_t packet_size = 96;
 
         // Заполняем буфер тишиной
-        memset(mic_buf, 0, packet_size);
+        if (pcm_ticks_in_buffer == 0) {
+            memset(mic_buf, 0, packet_size);
+            mic_dst           = (int16_t *)mic_buf;
+        }
 
-        int16_t *dst           = (int16_t *)mic_buf;
         uint16_t samples_added = 0;
         uint16_t max_samples   = packet_size / 4;
 
@@ -561,8 +564,8 @@ void mic_task(void) {
                     int16_t  pcm       = ppm_to_audio(ppm_value);
                     statistics.total_pcm_convert++;
 
-                    *dst++ = pcm;    // Левый канал
-                    *dst++ = pcm;    // Правый канал
+                    *mic_dst++ = pcm;    // Левый канал
+                    *mic_dst++ = pcm;    // Правый канал
 
                     samples_added++;
                 }
@@ -579,19 +582,23 @@ void mic_task(void) {
             uint32_t ppm_value = multicore_fifo_pop_blocking();
             statistics.total_summed_ppm_in_usb += ppm_value;
             int16_t  pcm       = ppm_to_audio(ppm_value);
+            pcm_ticks_in_buffer++;
             statistics.total_pcm_convert++;
 
-            *dst++ = pcm;    // Левый канал
-            *dst++ = pcm;    // Правый канал
+            *mic_dst++ = pcm;
 
             samples_added++;
+
+            if(pcm_ticks_in_buffer == packet_size){
+                break;
+            }
         }
 
         // Отправка данных через USB
-        // if(samples_added % packet_size == 0) {
-        //     tud_audio_write((uint8_t *)mic_buf, packet_size);
-        //     //samples_added = 0;
-        // }
+        if(pcm_ticks_in_buffer == packet_size) {
+            tud_audio_write((uint8_t *)mic_buf, packet_size);
+            pcm_ticks_in_buffer = 0;
+        }
     }
 }
 
