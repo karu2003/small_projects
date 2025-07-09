@@ -83,12 +83,16 @@ void second_core_main(void);    // Function for Core1 (transmitter + interface)
 typedef struct {
     uint32_t total_pcm_received;
     uint32_t total_ppm_convert;
+    uint32_t total_pcm_convert;
     uint32_t total_ppm_sent;
     uint32_t total_ppm_received;
     uint32_t total_sent;
     uint32_t total_received;
-    uint64_t total_summed_ppm;    // Сумма всех PPM значений
-    uint64_t total_summed_pcm;    // Сумма всех PCM значений
+    uint64_t total_summed_ppm_out;    // Сумма всех PPM значений на выходе
+    uint64_t total_summed_ppm_in;     // Сумма всех PPM значений на входе
+    uint64_t total_summed_ppm_in_usb; // Сумма всех PPM значений после приёма, перед пересылкой по USB
+    uint64_t total_ticks_attempt_send_to_usb;
+    uint64_t total_bytes_sent_to_usb;
 } statistics_t;
 
 // Структура для двойной буферизации динамика
@@ -109,7 +113,7 @@ typedef struct {
 
 // Структура для обмена данными между ядрами
 typedef struct {
-    uint32_t          buffer[2][128];
+    uint32_t          buffer[2][48];
     volatile uint16_t size[2];
     volatile uint16_t packet_size;
     volatile uint8_t  write_index;
