@@ -111,7 +111,7 @@ typedef struct {
 
 // Структура для обмена данными между ядрами
 typedef struct {
-    uint32_t          buffer[2][128];
+    uint32_t          buffer[2][48];
     volatile uint16_t size[2];
     volatile uint16_t packet_size;
     volatile uint8_t  write_index;

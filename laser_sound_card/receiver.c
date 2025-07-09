@@ -12,13 +12,13 @@ void update_measurements() {
     static uint16_t buffer_pos       = 0;
     static uint8_t  current_buffer   = 0;
     static bool     buffer_acquired  = false;
-    static uint32_t last_packet_size = 192;    // Начальный размер по умолчанию
+    //static uint32_t last_packet_size = 192;    // Начальный размер по умолчанию
 
     // Получаем текущий размер пакета от первого ядра
-    if (sem_initialized) {
-        // Храним актуальный размер пакета для межъядерного обмена
-        last_packet_size = shared_ppm_data.packet_size > 0 ? shared_ppm_data.packet_size : last_packet_size;
-    }
+    // if (sem_initialized) {
+    //     // Храним актуальный размер пакета для межъядерного обмена
+    //     last_packet_size = shared_ppm_data.packet_size > 0 ? shared_ppm_data.packet_size : last_packet_size;
+    // }
 
     while (detector_running && !pio_sm_is_rx_fifo_empty(pio, sm_det)) {
         uint32_t measured_width  = pio_sm_get(pio, sm_det);
@@ -45,7 +45,7 @@ void update_measurements() {
                     shared_ppm_data.buffer[current_buffer][buffer_pos++] = corrected_width;
 
                     // Если буфер заполнен до размера пакета, уведомляем другое ядро
-                    if (buffer_pos >= last_packet_size / 4 || buffer_pos >= 128) {    // Делим на 4 для стерео 16 бит
+                    if (/*buffer_pos >= last_packet_size / 4 ||*/ buffer_pos >= 48) {    // Делим на 4 для стерео 16 бит
                         shared_ppm_data.size[current_buffer] = buffer_pos;
                         shared_ppm_data.write_index          = (uint8_t)((current_buffer + 1) % 2);
                         sem_release(&shared_ppm_data.sem_full);

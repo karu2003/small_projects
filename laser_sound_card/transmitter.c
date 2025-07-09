@@ -105,7 +105,8 @@ void init_core_shared_buffer(void) {
     sem_init(&shared_ppm_data.sem_full, 0, 2);     // Нет заполненных буферов
 
     // Установим флаг инициализации
-    sem_initialized = true;
+    // sem_initialized = true;
+    sem_initialized = false;
 }
 
 void generate_pulse(uint32_t pause_width) {
@@ -483,6 +484,7 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
 
     // static uint8_t silence[192] = {0};
     // tud_audio_write(silence, sizeof(silence));
+    tud_audio_write((uint8_t *)mic_buf, 192);
 
     return true;
 
@@ -575,7 +577,9 @@ void mic_task(void) {
         // Если данных из семафоров недостаточно или их нет, используем FIFO
         while (multicore_fifo_rvalid() && samples_added < max_samples) {
             uint32_t ppm_value = multicore_fifo_pop_blocking();
+            statistics.total_summed_ppm_in_usb += ppm_value;
             int16_t  pcm       = ppm_to_audio(ppm_value);
+            statistics.total_pcm_convert++;
 
             *dst++ = pcm;    // Левый канал
             *dst++ = pcm;    // Правый канал
@@ -584,7 +588,10 @@ void mic_task(void) {
         }
 
         // Отправка данных через USB
-        tud_audio_write((uint8_t *)mic_buf, packet_size);
+        // if(samples_added % packet_size == 0) {
+        //     tud_audio_write((uint8_t *)mic_buf, packet_size);
+        //     //samples_added = 0;
+        // }
     }
 }
 
