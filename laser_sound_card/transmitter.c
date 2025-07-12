@@ -27,7 +27,7 @@ int8_t  mute[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];      // +1 for master chan
 int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master channel 0
 
 // Buffer for microphone data
-int32_t mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
+int32_t  mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
 int16_t *mic_dst;
 // Buffer for speaker data
 int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
@@ -37,43 +37,27 @@ uint16_t spk_data_size;
 const uint8_t resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
                                                                         CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX};
 // Current resolution, update on format change
-uint8_t current_resolution;
-uint8_t has_custom_value = false;
+uint8_t  current_resolution;
 uint16_t pcm_ticks_in_buffer = 0;
 
-// Двойные буферы для динамика (USB -> PPM)
+// Double buffers for speaker (USB -> PPM)
 static spk_ppm_buffer_t spk_buffers[2];
-static volatile uint8_t current_spk_write_buffer = 0;    // Буфер для подготовки PPM
-static volatile uint8_t current_spk_read_buffer  = 0;    // Буфер для чтения в timer
-
-// // Двойные буферы для микрофона (PPM -> USB)
-// static mic_pcm_buffer_t mic_buffers[2];
-// static volatile uint8_t current_mic_write_buffer = 0;    // Буфер для записи из PPM
-// static volatile uint8_t current_mic_read_buffer  = 0;    // Буфер для чтения в USB
-
-static volatile uint32_t timer_irq_count      = 0;
-static volatile uint32_t spk_buf_pos          = 0;
-static volatile bool     buffer_being_updated = false;
-
-volatile statistics_t statistics = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static volatile uint8_t current_spk_write_buffer = 0;    // Buffer for PPM preparation
+static volatile uint8_t current_spk_read_buffer  = 0;    // Buffer for reading in timer
 
 void led_blinking_task(void);
 void spk_task(void);
 void mic_task(void);
-void audio_control_task(void);
-void statistics_task(void);
 
-static PIO  pio = pio1;    // Use another PIO to avoid conflicts
+static PIO  pio = pio1;
 static uint sm_gen;
 
 uint32_t audio_frame_ticks;
 
 void setup_uart() {
     uart_init(UART_ID, BAUD_RATE);
-
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-
     stdio_uart_init();
 }
 
@@ -85,30 +69,6 @@ void init_double_buffering(void) {
     }
     current_spk_write_buffer = 0;
     current_spk_read_buffer  = 0;
-
-    // for (int i = 0; i < 2; i++) {
-    //     mic_buffers[i].size     = 0;
-    //     mic_buffers[i].position = 0;
-    //     mic_buffers[i].ready    = false;
-    // }
-    // current_mic_write_buffer = 0;
-    // current_mic_read_buffer  = 0;
-}
-
-void init_core_shared_buffer(void) {
-    // Инициализация счетчиков и индексов
-    shared_ppm_data.write_index = 0;
-    shared_ppm_data.read_index  = 0;
-    shared_ppm_data.size[0]     = 0;
-    shared_ppm_data.size[1]     = 0;
-
-    // Инициализация семафоров
-    sem_init(&shared_ppm_data.sem_empty, 2, 2);    // Два пустых буфера
-    sem_init(&shared_ppm_data.sem_full, 0, 2);     // Нет заполненных буферов
-
-    // Установим флаг инициализации
-    // sem_initialized = true;
-    sem_initialized = false;
 }
 
 void generate_pulse(uint32_t pause_width) {
@@ -155,13 +115,9 @@ void timer0_irq_handler() {
 
         if (spk_buffers[current_spk_read_buffer].ready &&
             spk_buffers[current_spk_read_buffer].position < spk_buffers[current_spk_read_buffer].size) {
-            
-            // statistics.total_summed_ppm_out += spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position];
 
             ppm_value = MIN_INTERVAL_CYCLES +
                         spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
-            statistics.total_ppm_sent++;
-            statistics.total_summed_ppm_out += (ppm_value - MIN_INTERVAL_CYCLES);
 
             if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
                 spk_buffers[current_spk_read_buffer].ready    = false;
@@ -176,7 +132,6 @@ void timer0_irq_handler() {
         }
 
         generate_pulse(ppm_value);
-        statistics.total_sent++;
         timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
     }
 }
@@ -184,8 +139,6 @@ void timer0_irq_handler() {
 void first_core_main() {
     board_init();
     setup_uart();
-
-    init_core_shared_buffer();
 
     tusb_rhport_init_t dev_init = {
         .role  = TUSB_ROLE_DEVICE,
@@ -212,21 +165,11 @@ void first_core_main() {
 
     timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
 
-    // test audio zo PPM
-    printf("Audio to PPM(-32768): %d\r\n", audio_to_ppm(-32768));
-    printf("Audio to PPM(0): %d\r\n", audio_to_ppm(0));
-    printf("Audio to PPM(32767): %d\r\n", audio_to_ppm(32767));
-    printf("PPM to Audio(0): %d\r\n", ppm_to_audio(0));
-    printf("PPM to Audio(512): %d\r\n", ppm_to_audio(512));
-    printf("PPM to Audio(1023): %d\r\n", ppm_to_audio(1023));
-
     // Main operation loop on Core1
     while (1) {
         tud_task();
         spk_task();
         mic_task();
-        statistics_task();
-        // audio_control_task();
         led_blinking_task();
     }
 }
@@ -461,13 +404,8 @@ bool tud_audio_rx_done_pre_read_cb(uint8_t rhport, uint16_t n_bytes_received, ui
     (void)ep_out;
     (void)cur_alt_setting;
 
-    // if (sem_initialized) {
-    //     shared_ppm_data.packet_size = (uint16_t)n_bytes_received;
-    // }
-
     if (!spk_buffers[current_spk_write_buffer].ready) {
         spk_data_size = tud_audio_read(spk_buf, n_bytes_received);
-        statistics.total_pcm_received += spk_data_size;
         TU_LOG1("RX done pre read callback called, received %d bytes\r\n", spk_data_size);
         if (sem_initialized) {
             shared_ppm_data.packet_size = spk_data_size;
@@ -484,25 +422,7 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
     (void)ep_in;
     (void)cur_alt_setting;
 
-    // static uint8_t silence[192] = {0};
-    // tud_audio_write(silence, sizeof(silence));
-
     return true;
-
-    // if (mic_buffers[current_mic_read_buffer].ready) {
-    //     uint16_t written = tud_audio_write((uint8_t *)mic_buffers[current_mic_read_buffer].pcm_buffer,
-    //                                        (uint16_t)(mic_buffers[current_mic_read_buffer].size * sizeof(int16_t)));
-
-    //     if (written > 0) {
-    //         // Буфер успешно отправлен, освобождаем его
-    //         mic_buffers[current_mic_read_buffer].ready    = false;
-    //         mic_buffers[current_mic_read_buffer].size     = 0;
-    //         mic_buffers[current_mic_read_buffer].position = 0;
-    //         current_mic_read_buffer                       = (uint8_t)((current_mic_read_buffer + 1) % 2);
-    //         return true;
-    //     }
-    // }
-    // return false;
 }
 
 void spk_task(void) {
@@ -514,14 +434,10 @@ void spk_task(void) {
             uint16_t  buffer_pos = 0;
 
             while (src < limit) {
-                int32_t left  = *src++;
-                int32_t right = *src++;
-                int16_t mixed = (int16_t)((left >> 1) + (right >> 1));
-                
-                // statistics.total_summed_ppm_out += audio_to_ppm(mixed);
+                int32_t left      = *src++;
+                int32_t right     = *src++;
+                int16_t mixed     = (int16_t)((left >> 1) + (right >> 1));
                 dst[buffer_pos++] = audio_to_ppm(mixed);
-                statistics.total_ppm_convert++;
-                
             }
 
             spk_buffers[current_spk_write_buffer].size     = buffer_pos;
@@ -535,133 +451,105 @@ void spk_task(void) {
 }
 
 void mic_task(void) {
-    // Проверяем, что USB готов
-    if (tud_audio_mounted() && current_resolution == 16) {
-        // Размер пакета
-        uint16_t packet_size = 96;
+    static absolute_time_t last_fill_time;
 
-        // Заполняем буфер тишиной
-        if (pcm_ticks_in_buffer == 0) {
-            memset(mic_buf, 0, packet_size);
-            mic_dst           = (int16_t *)mic_buf;
-        }
+    if (!tud_audio_mounted() || current_resolution != 16) {
+        return;
+    }
 
-        uint16_t samples_added = 0;
-        uint16_t max_samples   = packet_size / 4;
+    const uint16_t packet_size_bytes = 96;
 
-        // Сначала пробуем получить данные из семафоров, если они инициализированы
-        if (sem_initialized) {
-            // Не блокирующая проверка наличия данных
-            if (sem_try_acquire(&shared_ppm_data.sem_full)) {
-                // Есть данные - обрабатываем буфер
-                uint8_t  read_buf  = shared_ppm_data.read_index;
-                uint16_t available = shared_ppm_data.size[read_buf];
+    // Initialize on first call or after sending
+    if (pcm_ticks_in_buffer == 0) {
+        memset(mic_buf, 0, packet_size_bytes);
+        mic_dst        = (int16_t *)mic_buf;
+        last_fill_time = get_absolute_time();
+    }
 
-                // Преобразуем PPM в PCM данные для USB
-                for (uint16_t i = 0; i < available && samples_added < max_samples; i++) {
-                    uint32_t ppm_value = shared_ppm_data.buffer[read_buf][i];
-                    statistics.total_summed_ppm_in_usb += ppm_value;
-                    int16_t  pcm       = ppm_to_audio(ppm_value);
-                    statistics.total_pcm_convert++;
+    while (multicore_fifo_rvalid() && (pcm_ticks_in_buffer < packet_size_bytes)) {
+        uint32_t ppm_value = multicore_fifo_pop_blocking();
+        int16_t  pcm       = ppm_to_audio(ppm_value);
+        *mic_dst++         = pcm;
+        pcm_ticks_in_buffer += 2;
+    }
 
-                    *mic_dst++ = pcm;    // Левый канал
-                    *mic_dst++ = pcm;    // Правый канал
+    // Check sending conditions:
+    bool buffer_full     = (pcm_ticks_in_buffer >= packet_size_bytes);
+    bool timeout_expired = absolute_time_diff_us(last_fill_time, get_absolute_time()) >= 1000;
 
-                    samples_added++;
-                }
-
-                // Освобождаем буфер
-                shared_ppm_data.size[read_buf] = 0;
-                shared_ppm_data.read_index     = (uint8_t)((read_buf + 1) % 2);    // Добавляем явное приведение типа
-                sem_release(&shared_ppm_data.sem_empty);
-            }
-        }
-
-        // Если данных из семафоров недостаточно или их нет, используем FIFO
-        while (multicore_fifo_rvalid() /*&& samples_added < max_samples*/) {
-            uint32_t ppm_value = multicore_fifo_pop_blocking();
-            statistics.total_summed_ppm_in_usb += ppm_value;
-            int16_t  pcm       = ppm_to_audio(ppm_value);
-            pcm_ticks_in_buffer++;
-            statistics.total_pcm_convert++;
-
-            *mic_dst++ = pcm;
-
-            samples_added++;
-
-            if(pcm_ticks_in_buffer == packet_size){
-                break;
-            }
-        }
-
-        // Отправка данных через USB
-        // TODO: send incomplete packets at end of transmission.
-        if(pcm_ticks_in_buffer == packet_size) {
-            uint16_t bytes_written = tud_audio_write((uint8_t *)mic_buf, pcm_ticks_in_buffer*2); // pcm_ticks_in_buffer*2 because pcm ticks are 16bit and we're counting bytes here.
-            statistics.total_ticks_attempt_send_to_usb += pcm_ticks_in_buffer;
-            statistics.total_bytes_sent_to_usb += bytes_written;
-            pcm_ticks_in_buffer = 0;
-        }
+    if (buffer_full || (pcm_ticks_in_buffer > 0 && timeout_expired)) {
+        tud_audio_write((uint8_t *)mic_buf, pcm_ticks_in_buffer);
+        pcm_ticks_in_buffer = 0;
     }
 }
 
 // void mic_task(void) {
-//     // Проверяем, что USB готов и есть данные в FIFO
+//     // Check that USB is ready
 //     if (tud_audio_mounted() && current_resolution == 16) {
-//         // Размер пакета должен соответствовать размеру входящего пакета
-//         uint16_t packet_size = spk_data_size > 0 ? spk_data_size : 192;
+//         // Packet size
+//         uint16_t packet_size = 96;
 
-//         // Заполняем буфер тишиной
-//         memset(mic_buf, 0, packet_size);
-
-//         // Заполняем буфер доступными данными из FIFO (сколько есть)
-//         int16_t *dst           = (int16_t *)mic_buf;
-//         uint16_t samples_added = 0;
-//         uint16_t max_samples   = packet_size / 4;    // Число моно-сэмплов (пар L/R)
-
-//         while (multicore_fifo_rvalid() && samples_added < max_samples) {
-//             // Не блокирующее чтение из FIFO
-//             uint32_t ppm_value = multicore_fifo_pop_blocking();    // Здесь есть данные, так что блокировка минимальна
-
-//             // Преобразование PPM -> PCM и запись в буфер (стерео)
-//             int16_t pcm = ppm_to_audio(ppm_value);
-//             *dst++      = pcm;    // Левый канал
-//             *dst++      = pcm;    // Правый канал
-
-//             samples_added++;
+//         // Fill buffer with silence
+//         if (pcm_ticks_in_buffer == 0) {
+//             memset(mic_buf, 0, packet_size);
+//             mic_dst           = (int16_t *)mic_buf;
 //         }
 
-//         // Отправка данных напрямую без проверки результата
-//         tud_audio_write((uint8_t *)mic_buf, packet_size);
-//     }
-// }
+//         uint16_t samples_added = 0;
+//         uint16_t max_samples   = packet_size / 4;
 
-// void mic_task(void) {
-//     // Если буфер для записи свободен, и пришли данные по FIFO
-//     if (!mic_buffers[current_mic_write_buffer].ready && multicore_fifo_rvalid()) {
-//         uint32_t ppm_value = multicore_fifo_pop_blocking();
+//         // First try to get data from semaphores if they are initialized
+//         if (sem_initialized) {
+//             // Non-blocking check for data availability
+//             if (sem_try_acquire(&shared_ppm_data.sem_full)) {
+//                 // Data is available - process buffer
+//                 uint8_t  read_buf  = shared_ppm_data.read_index;
+//                 uint16_t available = shared_ppm_data.size[read_buf];
 
-//         if (current_resolution == 16) {
-//             int16_t audio_sample = ppm_to_audio(ppm_value);
+//                 // Convert PPM to PCM data for USB
+//                 for (uint16_t i = 0; i < available && samples_added < max_samples; i++) {
+//                     uint32_t ppm_value = shared_ppm_data.buffer[read_buf][i];
+//                     statistics.total_summed_ppm_in_usb += ppm_value;
+//                     int16_t  pcm       = ppm_to_audio(ppm_value);
+//                     statistics.total_pcm_convert++;
 
-//             int      pos = mic_buffers[current_mic_write_buffer].position;
-//             int16_t *dst = (int16_t *)mic_buffers[current_mic_write_buffer].pcm_buffer + pos;
+//                     *mic_dst++ = pcm;    // Left channel
+//                     *mic_dst++ = pcm;    // Right channel
 
-//             *dst++ = audio_sample;
-//             *dst++ = audio_sample;
-//             mic_buffers[current_mic_write_buffer].position += 2;
-
-//             if (mic_buffers[current_mic_write_buffer].position >= 96) {
-//                 mic_buffers[current_mic_write_buffer].size =
-//                     mic_buffers[current_mic_write_buffer].position;
-//                 mic_buffers[current_mic_write_buffer].ready = true;
-
-//                 if (!mic_buffers[current_mic_read_buffer].ready) {
-//                     current_mic_read_buffer = current_mic_write_buffer;
+//                     samples_added++;
 //                 }
 
-//                 current_mic_write_buffer = (uint8_t)((current_mic_write_buffer + 1) % 2);
+//                 // Release buffer
+//                 shared_ppm_data.size[read_buf] = 0;
+//                 shared_ppm_data.read_index     = (uint8_t)((read_buf + 1) % 2);    // Add explicit type casting
+//                 sem_release(&shared_ppm_data.sem_empty);
 //             }
+//         }
+
+//         // If data from semaphores is insufficient or not available, use FIFO
+//         while (multicore_fifo_rvalid() /*&& samples_added < max_samples*/) {
+//             uint32_t ppm_value = multicore_fifo_pop_blocking();
+//             statistics.total_summed_ppm_in_usb += ppm_value;
+//             int16_t  pcm       = ppm_to_audio(ppm_value);
+//             pcm_ticks_in_buffer++;
+//             statistics.total_pcm_convert++;
+
+//             *mic_dst++ = pcm;
+
+//             samples_added++;
+
+//             if(pcm_ticks_in_buffer == packet_size){
+//                 break;
+//             }
+//         }
+
+//         // Send data via USB
+//         // TODO: send incomplete packets at end of transmission.
+//         if(pcm_ticks_in_buffer == packet_size) {
+//             uint16_t bytes_written = tud_audio_write((uint8_t *)mic_buf, pcm_ticks_in_buffer*2); // pcm_ticks_in_buffer*2 because pcm ticks are 16bit and we're counting bytes here.
+//             statistics.total_ticks_attempt_send_to_usb += pcm_ticks_in_buffer;
+//             statistics.total_bytes_sent_to_usb += bytes_written;
+//             pcm_ticks_in_buffer = 0;
 //         }
 //     }
 // }
@@ -682,39 +570,39 @@ void led_blinking_task(void) {
     led_state = 1 - led_state;
 }
 
-void statistics_task(void) {
-    // Print statistics every 15 seconds
-    static uint32_t last_print_ms = 0;
+// void statistics_task(void) {
+//     // Print statistics every 15 seconds
+//     static uint32_t last_print_ms = 0;
 
-    if (board_millis() - last_print_ms < 15000)
-        return;
-    last_print_ms = board_millis();
+//     if (board_millis() - last_print_ms < 15000)
+//         return;
+//     last_print_ms = board_millis();
 
-    printf("Statistics:\r\n");
-    printf("  Total PCM received: %lu\r\n", statistics.total_pcm_received);
-    printf("  Total PPM converted: %lu\r\n", statistics.total_ppm_convert);
-    printf("  Total PCM converted: %lu\r\n", statistics.total_pcm_convert);
-    printf("  Total PPM sent: %lu\r\n", statistics.total_ppm_sent);
-    printf("  Total PPM received: %lu\r\n", statistics.total_ppm_received);
-    printf("  Total sent: %lu\r\n", statistics.total_sent);
-    printf("  Total received: %lu\r\n", statistics.total_received);
-    printf("  Total summed PPM out: %llu\r\n", statistics.total_summed_ppm_out);
-    printf("  Total summed PPM in: %llu\r\n", statistics.total_summed_ppm_in);
-    printf("  Total summed PPM before USB communication: %llu\r\n", statistics.total_summed_ppm_in_usb);
-    printf("  Total ticks attempted to send to USB: %llu\r\n", statistics.total_ticks_attempt_send_to_usb);
-    printf("  Total bytes sent to USB: %llu\r\n", statistics.total_bytes_sent_to_usb);
+//     printf("Statistics:\r\n");
+//     printf("  Total PCM received: %lu\r\n", statistics.total_pcm_received);
+//     printf("  Total PPM converted: %lu\r\n", statistics.total_ppm_convert);
+//     printf("  Total PCM converted: %lu\r\n", statistics.total_pcm_convert);
+//     printf("  Total PPM sent: %lu\r\n", statistics.total_ppm_sent);
+//     printf("  Total PPM received: %lu\r\n", statistics.total_ppm_received);
+//     printf("  Total sent: %lu\r\n", statistics.total_sent);
+//     printf("  Total received: %lu\r\n", statistics.total_received);
+//     printf("  Total summed PPM out: %llu\r\n", statistics.total_summed_ppm_out);
+//     printf("  Total summed PPM in: %llu\r\n", statistics.total_summed_ppm_in);
+//     printf("  Total summed PPM before USB communication: %llu\r\n", statistics.total_summed_ppm_in_usb);
+//     printf("  Total ticks attempted to send to USB: %llu\r\n", statistics.total_ticks_attempt_send_to_usb);
+//     printf("  Total bytes sent to USB: %llu\r\n", statistics.total_bytes_sent_to_usb);
 
-    // Reset statistics after printing
-    statistics.total_pcm_received      = 0;
-    statistics.total_ppm_convert       = 0;
-    statistics.total_pcm_convert       = 0;
-    statistics.total_ppm_sent          = 0;
-    statistics.total_ppm_received      = 0;
-    statistics.total_sent              = 0;
-    statistics.total_received          = 0;
-    statistics.total_summed_ppm_out    = 0;
-    statistics.total_summed_ppm_in     = 0;
-    statistics.total_summed_ppm_in_usb = 0;
-    statistics.total_ticks_attempt_send_to_usb = 0;
-    statistics.total_bytes_sent_to_usb = 0;
-}
+//     // Reset statistics after printing
+//     statistics.total_pcm_received              = 0;
+//     statistics.total_ppm_convert               = 0;
+//     statistics.total_pcm_convert               = 0;
+//     statistics.total_ppm_sent                  = 0;
+//     statistics.total_ppm_received              = 0;
+//     statistics.total_sent                      = 0;
+//     statistics.total_received                  = 0;
+//     statistics.total_summed_ppm_out            = 0;
+//     statistics.total_summed_ppm_in             = 0;
+//     statistics.total_summed_ppm_in_usb         = 0;
+//     statistics.total_ticks_attempt_send_to_usb = 0;
+//     statistics.total_bytes_sent_to_usb         = 0;
+// }

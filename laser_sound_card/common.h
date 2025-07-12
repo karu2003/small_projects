@@ -3,7 +3,6 @@
 #include "hardware/clocks.h"
 #include "hardware/pio.h"
 #include "pico/multicore.h"
-#include "pico/sem.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include <stdint.h>
@@ -66,11 +65,6 @@ enum
 
 static const float MIN_PULSE_PERIOD_US = MIN_PULSE_PERIOD / 2;
 static const float PIO_FREQ            = SYS_FREQ * 1000.0f;
-// static const uint16_t MIN_INTERVAL_CYCLES =
-//     (uint16_t)MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);
-
-// static const uint16_t MIN_INTERVAL_CYCLES =
-//     (uint16_t)(MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000.0f) + 0.5f);
 
 static const uint16_t MIN_INTERVAL_CYCLES =
     MIN_PULSE_PERIOD_US * (SYS_FREQ / 1000);
@@ -79,7 +73,7 @@ static const uint16_t MIN_INTERVAL_CYCLES =
 void first_core_main(void);     // Function for Core0 (receiver)
 void second_core_main(void);    // Function for Core1 (transmitter + interface)
 
-// struckt statistics
+// Statistics structure
 typedef struct {
     uint32_t total_pcm_received;
     uint32_t total_ppm_convert;
@@ -88,30 +82,30 @@ typedef struct {
     uint32_t total_ppm_received;
     uint32_t total_sent;
     uint32_t total_received;
-    uint64_t total_summed_ppm_out;    // Сумма всех PPM значений на выходе
-    uint64_t total_summed_ppm_in;     // Сумма всех PPM значений на входе
-    uint64_t total_summed_ppm_in_usb; // Сумма всех PPM значений после приёма, перед пересылкой по USB
+    uint64_t total_summed_ppm_out;    // Sum of all PPM values at output
+    uint64_t total_summed_ppm_in;     // Sum of all PPM values at input
+    uint64_t total_summed_ppm_in_usb; // Sum of all PPM values after reception, before USB transmission
     uint64_t total_ticks_attempt_send_to_usb;
     uint64_t total_bytes_sent_to_usb;
 } statistics_t;
 
-// Структура для двойной буферизации динамика
+// Structure for speaker double buffering
 typedef struct {
-    uint16_t          ppm_buffer[(CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4) / 2];    // Буфер готовых PPM значений
-    volatile uint16_t size;                                                           // Количество PPM значений в буфере
-    volatile uint16_t position;                                                       // Текущая позиция для чтения
-    volatile bool     ready;                                                          // Буфер готов к использованию
+    uint16_t          ppm_buffer[(CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4) / 2];    // Buffer for ready PPM values
+    volatile uint16_t size;                                                           // Number of PPM values in buffer
+    volatile uint16_t position;                                                       // Current position for reading
+    volatile bool     ready;                                                          // Buffer ready for use
 } spk_ppm_buffer_t;
 
-// Структура для двойной буферизации микрофона
+// Structure for microphone double buffering
 typedef struct {
-    int32_t           pcm_buffer[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];    // Буфер для PCM данных
-    volatile uint16_t size;                                                    // Размер данных в буфере
-    volatile uint16_t position;                                                // Текущая позиция для записи (изменено с int)
-    volatile bool     ready;                                                   // Буфер готов к отправке
+    int32_t           pcm_buffer[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];    // Buffer for PCM data
+    volatile uint16_t size;                                                    // Data size in buffer
+    volatile uint16_t position;                                                // Current position for writing (changed from int)
+    volatile bool     ready;                                                   // Buffer ready for transmission
 } mic_pcm_buffer_t;
 
-// Структура для обмена данными между ядрами
+// Structure for data exchange between cores
 typedef struct {
     uint32_t          buffer[2][48];
     volatile uint16_t size[2];
@@ -122,6 +116,6 @@ typedef struct {
     semaphore_t       sem_full;
 } core_shared_buffer_t;
 
-// Объявление общих переменных
+// Declaration of shared variables
 extern core_shared_buffer_t shared_ppm_data;
 extern volatile bool        sem_initialized;
