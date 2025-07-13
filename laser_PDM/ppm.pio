@@ -17,9 +17,9 @@ pause:
 
 .program pulse_detector
 .wrap_target
-    wait 0 pin 0        ; wait for negative edge (end of pulse, start of pause)
+    wait 0 pin 0 [2]    ; wait for negative edge (end of pulse, start of pause)
     wait 1 pin 0        ; wait for high signal level (pulse)
-    wait 0 pin 0        ; wait for negative edge (end of pulse, start of pause)
+    wait 0 pin 0 [2]    ; wait for negative edge (end of pulse, start of pause)
     mov y ~NULL         ; initialize counter with maximum value
 count_loop:
     jmp pin finish      ; check if high level appeared - pause ended
@@ -29,3 +29,16 @@ finish:
     mov ISR ~y          ; get pause duration (0xFFFFFFFF - y)
     push                ; put value into FIFO noblock
 .wrap                   ; return to measure the next pause
+
+.program laser_pdm_out
+.side_set 1
+
+; Программа с контролем включения/выключения лазера
+.wrap_target
+    pull block            ; Получить 32 бита PDM данных
+    set x, 31            ; Установить счетчик для 32 бит
+bitloop:
+    out pins, 1          ; Вывести бит на лазер
+    nop [7]              ; Задержка для стабилизации (настраивается)
+    jmp x--, bitloop     ; Повторить для всех 32 бит
+.wrap
