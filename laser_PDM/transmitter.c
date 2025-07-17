@@ -30,7 +30,7 @@ int16_t volume[CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX + 1];    // +1 for master chan
 int32_t  mic_buf[CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ / 4];
 int16_t *mic_dst;
 // Buffer for speaker data
-int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
+// int32_t spk_buf[CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ / 4];
 // Speaker data size received in the last frame
 uint16_t spk_data_size;
 // Resolution per format
@@ -41,9 +41,9 @@ uint8_t  current_resolution;
 uint16_t pcm_ticks_in_buffer = 0;
 
 // Double buffers for speaker (USB -> PPM)
-static spk_ppm_buffer_t spk_buffers[2];
-static volatile uint8_t current_spk_write_buffer = 0;    // Buffer for PPM preparation
-static volatile uint8_t current_spk_read_buffer  = 0;    // Buffer for reading in timer
+// static spk_ppm_buffer_t spk_buffers[2];
+// static volatile uint8_t current_spk_write_buffer = 0;    // Buffer for PPM preparation
+// static volatile uint8_t current_spk_read_buffer  = 0;    // Buffer for reading in timer
 
 void led_blinking_task(void);
 void spk_task(void);
@@ -134,15 +134,15 @@ void setup_uart() {
     stdio_uart_init();
 }
 
-void init_double_buffering(void) {
-    for (int i = 0; i < 2; i++) {
-        spk_buffers[i].size     = 0;
-        spk_buffers[i].position = 0;
-        spk_buffers[i].ready    = false;
-    }
-    current_spk_write_buffer = 0;
-    current_spk_read_buffer  = 0;
-}
+// void init_double_buffering(void) {
+//     for (int i = 0; i < 2; i++) {
+//         spk_buffers[i].size     = 0;
+//         spk_buffers[i].position = 0;
+//         spk_buffers[i].ready    = false;
+//     }
+//     current_spk_write_buffer = 0;
+//     current_spk_read_buffer  = 0;
+// }
 
 void generate_pulse(uint32_t pause_width) {
     pio_sm_put_blocking(pio, sm_gen, pause_width);
@@ -184,61 +184,62 @@ uint32_t pcm_to_pdm_advanced(uint16_t *pcm_samples, int count) {
 
 
 // Initialize PIO for pulse generator
-void init_pulse_generator(float freq) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-    sm_gen      = pio_claim_unused_sm(pio, true);
-    uint offset = pio_add_program(pio, &pulse_generator_program);
-#pragma GCC diagnostic pop
-    pio_sm_config c = pulse_generator_program_get_default_config(offset);
+// void init_pulse_generator(float freq) {
+// #pragma GCC diagnostic push
+// #pragma GCC diagnostic ignored "-Wsign-conversion"
+//     sm_gen      = pio_claim_unused_sm(pio, true);
+//     uint offset = pio_add_program(pio, &pulse_generator_program);
+// #pragma GCC diagnostic pop
+//     pio_sm_config c = pulse_generator_program_get_default_config(offset);
 
-    // Setup pins for PIO
-    sm_config_set_set_pins(&c, PULSE_GEN_PIN, 1);
-    pio_gpio_init(pio, PULSE_GEN_PIN);
-    pio_sm_set_consecutive_pindirs(pio, sm_gen, PULSE_GEN_PIN, 1, true);
+//     // Setup pins for PIO
+//     sm_config_set_set_pins(&c, PULSE_GEN_PIN, 1);
+//     pio_gpio_init(pio, PULSE_GEN_PIN);
+//     pio_sm_set_consecutive_pindirs(pio, sm_gen, PULSE_GEN_PIN, 1, true);
 
-    sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) / freq);
+//     sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) / freq);
 
-    pio_sm_init(pio, sm_gen, offset, &c);
-    pio_sm_set_enabled(pio, sm_gen, true);
-}
+//     pio_sm_init(pio, sm_gen, offset, &c);
+//     pio_sm_set_enabled(pio, sm_gen, true);
+// }
 
-uint16_t audio_to_ppm(int16_t audio_sample) {
-    return (uint16_t)(((int64_t)audio_sample + 32768) * 1024 / 65536);
-}
+// uint16_t audio_to_ppm(int16_t audio_sample) {
+//     return (uint16_t)(((int64_t)audio_sample + 32768) * 1024 / 65536);
+// }
 
-int16_t ppm_to_audio(uint32_t ppm_value) {
-    ppm_value &= 0x3FF;
-    return (int16_t)(((int64_t)ppm_value * 65536 / 1024) - 32768);
-}
-void timer0_irq_handler() {
-    if (timer_hw->intr & (1u << 0)) {
-        timer_hw->intr = 1u << 0;
+// int16_t ppm_to_audio(uint32_t ppm_value) {
+//     ppm_value &= 0x3FF;
+//     return (int16_t)(((int64_t)ppm_value * 65536 / 1024) - 32768);
+// }
 
-        uint32_t ppm_value;
+// void timer0_irq_handler() {
+//     if (timer_hw->intr & (1u << 0)) {
+//         timer_hw->intr = 1u << 0;
 
-        if (spk_buffers[current_spk_read_buffer].ready &&
-            spk_buffers[current_spk_read_buffer].position < spk_buffers[current_spk_read_buffer].size) {
+//         uint32_t ppm_value;
 
-            ppm_value = MIN_INTERVAL_CYCLES +
-                        spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
+//         if (spk_buffers[current_spk_read_buffer].ready &&
+//             spk_buffers[current_spk_read_buffer].position < spk_buffers[current_spk_read_buffer].size) {
 
-            if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
-                spk_buffers[current_spk_read_buffer].ready    = false;
-                spk_buffers[current_spk_read_buffer].position = 0;
-                spk_buffers[current_spk_read_buffer].size     = 0;
+//             ppm_value = MIN_INTERVAL_CYCLES +
+//                         spk_buffers[current_spk_read_buffer].ppm_buffer[spk_buffers[current_spk_read_buffer].position++];
 
-                current_spk_read_buffer = (uint8_t)((current_spk_read_buffer + 1) % 2);
-            }
-        }
-        else {
-            ppm_value = MIN_INTERVAL_CYCLES;
-        }
+//             if (spk_buffers[current_spk_read_buffer].position >= spk_buffers[current_spk_read_buffer].size) {
+//                 spk_buffers[current_spk_read_buffer].ready    = false;
+//                 spk_buffers[current_spk_read_buffer].position = 0;
+//                 spk_buffers[current_spk_read_buffer].size     = 0;
 
-        generate_pulse(ppm_value);
-        timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
-    }
-}
+//                 current_spk_read_buffer = (uint8_t)((current_spk_read_buffer + 1) % 2);
+//             }
+//         }
+//         else {
+//             ppm_value = MIN_INTERVAL_CYCLES;
+//         }
+
+//         generate_pulse(ppm_value);
+//         timer_hw->alarm[0] = timer_hw->timerawl + audio_frame_ticks;
+//     }
+// }
 
 void first_core_main() {
     board_init();
@@ -263,7 +264,7 @@ void first_core_main() {
     audio_frame_ticks = 1000000 / AUDIO_SAMPLE_RATE;
 
     // Setup timer interrupt for audio sampling
-    irq_set_exclusive_handler(TIMER_IRQ_0, timer0_irq_handler);
+    //irq_set_exclusive_handler(TIMER_IRQ_0, timer0_irq_handler);
     hw_set_bits(&timer_hw->inte, (1u << 0));
     irq_set_enabled(TIMER_IRQ_0, true);
 
@@ -272,8 +273,8 @@ void first_core_main() {
     // Main operation loop on Core1
     while (1) {
         tud_task();
-        audio_processing_task();
         spk_task();
+        audio_processing_task();
         mic_task();
         led_blinking_task();
     }
