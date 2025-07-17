@@ -112,19 +112,19 @@ typedef struct {
 } mic_pcm_buffer_t;
 
 // Structure for data exchange between cores
-typedef struct {
-    uint32_t          buffer[2][48];
-    volatile uint16_t size[2];
-    volatile uint16_t packet_size;
-    volatile uint8_t  write_index;
-    volatile uint8_t  read_index;
-    semaphore_t       sem_empty;
-    semaphore_t       sem_full;
-} core_shared_buffer_t;
+// typedef struct {
+//     uint32_t          buffer[2][48];
+//     volatile uint16_t size[2];
+//     volatile uint16_t packet_size;
+//     volatile uint8_t  write_index;
+//     volatile uint8_t  read_index;
+//     semaphore_t       sem_empty;
+//     semaphore_t       sem_full;
+// } core_shared_buffer_t;
 
 // Declaration of shared variables
-extern core_shared_buffer_t shared_ppm_data;
-extern volatile bool        sem_initialized;
+// extern core_shared_buffer_t shared_ppm_data;
+// extern volatile bool        sem_initialized;
 
 typedef struct {
     uint16_t pcm_buffer_a[BUFFER_SIZE];
